@@ -564,19 +564,33 @@ class TransitionGenerator {
         box.xPosition = this.interpolate(initial.xPosition, final.xPosition, t);
         box.yPosition = this.interpolate(initial.yPosition, final.yPosition, t);
         box.maskEnable = initial.maskEnable || final.maskEnable;
-        box.maskLeft = this.interpolate(initial.maskLeft, final.maskLeft, t);
-        box.maskTop = this.interpolate(initial.maskTop, final.maskTop, t);
-        box.maskRight = this.interpolate(initial.maskRight, final.maskRight, t);
-        box.maskBottom = this.interpolate(initial.maskBottom, final.maskBottom, t);
+        // BUG FIX: If maskEnable is false, treat mask values as 0
+        const initMaskL = initial.maskEnable ? initial.maskLeft : 0;
+        const initMaskR = initial.maskEnable ? initial.maskRight : 0;
+        const initMaskT = initial.maskEnable ? initial.maskTop : 0;
+        const initMaskB = initial.maskEnable ? initial.maskBottom : 0;
+        const finalMaskL = final.maskEnable ? final.maskLeft : 0;
+        const finalMaskR = final.maskEnable ? final.maskRight : 0;
+        const finalMaskT = final.maskEnable ? final.maskTop : 0;
+        const finalMaskB = final.maskEnable ? final.maskBottom : 0;
+        box.maskLeft = this.interpolate(initMaskL, finalMaskL, t);
+        box.maskTop = this.interpolate(initMaskT, finalMaskT, t);
+        box.maskRight = this.interpolate(initMaskR, finalMaskR, t);
+        box.maskBottom = this.interpolate(initMaskB, finalMaskB, t);
         return box;
     }
     
     // Get interpolated states for a specific frame (0 = initial, durationFrames = final)
+    // Correctly handles early disable and late enable timing
     getFrameStates(frame) {
         const t = this.durationFrames > 0 ? frame / this.durationFrames : 0;
+        const timing = this.calculateEnableDisableTiming();
         const states = {};
+        
         for (let i = 0; i < 4; i++) {
             states[i] = this.interpolateBox(this.initialStates[i], this.finalStates[i], t);
+            // Override enable state based on timing
+            states[i].enable = this.isBoxEnabledAtFrame(i, frame, timing);
         }
         return states;
     }
@@ -585,6 +599,215 @@ class TransitionGenerator {
         const initial = this.initialStates[boxIndex];
         const final = this.finalStates[boxIndex];
         return initial.enable || final.enable;
+    }
+    
+    // Calculate the visual area of a box at a given interpolation t
+    getBoxVisualArea(boxIndex, t) {
+        const interpolated = this.interpolateBox(this.initialStates[boxIndex], this.finalStates[boxIndex], t);
+        const baseW = interpolated.size * 32; // SCREEN_WIDTH
+        const baseH = interpolated.size * 18; // SCREEN_HEIGHT
+        const maskL = interpolated.maskEnable ? (interpolated.maskLeft / 32) * baseW : 0;
+        const maskR = interpolated.maskEnable ? (interpolated.maskRight / 32) * baseW : 0;
+        const maskT = interpolated.maskEnable ? (interpolated.maskTop / 18) * baseH : 0;
+        const maskB = interpolated.maskEnable ? (interpolated.maskBottom / 18) * baseH : 0;
+        const visibleW = baseW - maskL - maskR;
+        const visibleH = baseH - maskT - maskB;
+        return visibleW * visibleH;
+    }
+    
+    // Check if two boxes overlap at a given interpolation t
+    boxesOverlap(boxIndexA, boxIndexB, t) {
+        const boxA = this.interpolateBox(this.initialStates[boxIndexA], this.finalStates[boxIndexA], t);
+        const boxB = this.interpolateBox(this.initialStates[boxIndexB], this.finalStates[boxIndexB], t);
+        
+        const getBoxBounds = (box) => {
+            const baseW = box.size * 32;
+            const baseH = box.size * 18;
+            const maskL = box.maskEnable ? (box.maskLeft / 32) * baseW : 0;
+            const maskR = box.maskEnable ? (box.maskRight / 32) * baseW : 0;
+            const maskT = box.maskEnable ? (box.maskTop / 18) * baseH : 0;
+            const maskB = box.maskEnable ? (box.maskBottom / 18) * baseH : 0;
+            return {
+                left: box.xPosition - baseW / 2 + maskL,
+                right: box.xPosition + baseW / 2 - maskR,
+                top: box.yPosition + baseH / 2 - maskT,
+                bottom: box.yPosition - baseH / 2 + maskB
+            };
+        };
+        
+        const boundsA = getBoxBounds(boxA);
+        const boundsB = getBoxBounds(boxB);
+        
+        // Check for overlap
+        return !(boundsA.left >= boundsB.right || boundsA.right <= boundsB.left ||
+                 boundsA.bottom >= boundsB.top || boundsA.top <= boundsB.bottom);
+    }
+    
+    // Determine early disable frame for Enable->Disable transitions
+    // Returns the frame number to disable, or null if no early disable needed
+    //
+    // Logic: For a box that is Enable->Disable, check if there's a LARGER box with
+    // HIGHER index (lower layer priority) that overlaps with it. If the overlap
+    // persists for >= 5% of duration, we should disable this smaller upper-layer box
+    // early to simulate the visual expectation that larger boxes appear on top.
+    //
+    // Layer order: Box 0 (top) > Box 1 > Box 2 > Box 3 (bottom)
+    // Visual expectation: Larger box should appear on top
+    calculateEarlyDisableFrame(boxIndex) {
+        const initial = this.initialStates[boxIndex];
+        const final = this.finalStates[boxIndex];
+        
+        // Only applies to Enable -> Disable transitions
+        if (!initial.enable || final.enable) return null;
+        
+        const threshold = Math.ceil(this.durationFrames * 0.05); // 5% of duration
+        
+        // Check against boxes with HIGHER index (lower in layer order, i.e., "below" this box)
+        // If a larger box is "below" us but should visually be on top, we need to disable early
+        for (let other = boxIndex + 1; other < 4; other++) {
+            const otherFinal = this.finalStates[other];
+            
+            // Other box needs to be enabled at the end (will be visible)
+            if (!otherFinal.enable) continue;
+            
+            // Scan from the END of transition backwards to find when overlap starts
+            let consecutiveOverlapFrames = 0;
+            let firstOverlapFrame = null;
+            
+            for (let frame = this.durationFrames; frame >= 0; frame--) {
+                const t = frame / this.durationFrames;
+                
+                if (this.boxesOverlap(boxIndex, other, t)) {
+                    const areaThis = this.getBoxVisualArea(boxIndex, t);
+                    const areaOther = this.getBoxVisualArea(other, t);
+                    
+                    if (areaOther > areaThis) {
+                        consecutiveOverlapFrames++;
+                        firstOverlapFrame = frame;
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+            
+            if (consecutiveOverlapFrames >= threshold && firstOverlapFrame !== null) {
+                return firstOverlapFrame;
+            }
+        }
+        
+        return null;
+    }
+    
+    // Determine late enable frame for Disable->Enable transitions
+    // Returns the frame number to enable, or null if no late enable needed
+    //
+    // Logic: For a box that is Disable->Enable, check if there's a LARGER box with
+    // HIGHER index (lower layer priority) that overlaps with it at the start.
+    // If so, delay enabling until the overlap with larger boxes ends.
+    calculateLateEnableFrame(boxIndex) {
+        const initial = this.initialStates[boxIndex];
+        const final = this.finalStates[boxIndex];
+        
+        // Only applies to Disable -> Enable transitions
+        if (initial.enable || !final.enable) return null;
+        
+        const threshold = Math.ceil(this.durationFrames * 0.05); // 5% of duration
+        
+        // Check against boxes with HIGHER index (lower in layer order)
+        for (let other = boxIndex + 1; other < 4; other++) {
+            const otherInitial = this.initialStates[other];
+            
+            // Other box needs to be enabled at the start (currently visible)
+            if (!otherInitial.enable) continue;
+            
+            // Scan from the START of transition forwards to find when overlap ends
+            let consecutiveOverlapFrames = 0;
+            let lastOverlapFrame = null;
+            
+            for (let frame = 0; frame <= this.durationFrames; frame++) {
+                const t = frame / this.durationFrames;
+                
+                if (this.boxesOverlap(boxIndex, other, t)) {
+                    const areaThis = this.getBoxVisualArea(boxIndex, t);
+                    const areaOther = this.getBoxVisualArea(other, t);
+                    
+                    if (areaOther > areaThis) {
+                        consecutiveOverlapFrames++;
+                        lastOverlapFrame = frame;
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+            
+            if (consecutiveOverlapFrames >= threshold && lastOverlapFrame !== null) {
+                // Enable after the overlap ends
+                return lastOverlapFrame + 1;
+            }
+        }
+        
+        return null;
+    }
+    
+    // Calculate enable/disable timing info for all boxes
+    // Returns { earlyDisable: {boxIndex: frame}, lateEnable: {boxIndex: frame} }
+    calculateEnableDisableTiming() {
+        const earlyDisable = {};
+        const lateEnable = {};
+        
+        for (let i = 0; i < 4; i++) {
+            if (!this.shouldBoxAnimate(i)) continue;
+            
+            const earlyFrame = this.calculateEarlyDisableFrame(i);
+            if (earlyFrame !== null) {
+                earlyDisable[i] = earlyFrame;
+            }
+            
+            const lateFrame = this.calculateLateEnableFrame(i);
+            if (lateFrame !== null) {
+                lateEnable[i] = lateFrame;
+            }
+        }
+        
+        return { earlyDisable, lateEnable };
+    }
+    
+    // Check if a box is enabled at a specific frame (considering early disable / late enable)
+    isBoxEnabledAtFrame(boxIndex, frame, timing = null) {
+        const initial = this.initialStates[boxIndex];
+        const final = this.finalStates[boxIndex];
+        
+        if (!initial.enable && !final.enable) return false;
+        
+        // Calculate timing if not provided
+        if (!timing) {
+            timing = this.calculateEnableDisableTiming();
+        }
+        
+        // Enable -> Disable: check for early disable
+        if (initial.enable && !final.enable) {
+            const earlyFrame = timing.earlyDisable[boxIndex];
+            if (earlyFrame !== undefined && frame >= earlyFrame) {
+                return false;
+            }
+            return true; // Still enabled
+        }
+        
+        // Disable -> Enable: check for late enable
+        if (!initial.enable && final.enable) {
+            const lateFrame = timing.lateEnable[boxIndex];
+            if (lateFrame !== undefined && frame < lateFrame) {
+                return false;
+            }
+            return true; // Already enabled
+        }
+        
+        // Enable -> Enable: always enabled
+        return true;
     }
     
     generate() {
@@ -597,16 +820,28 @@ class TransitionGenerator {
             }
         }
         
+        // Calculate enable/disable timing
+        const timing = this.calculateEnableDisableTiming();
+        
         lines.push(`<!-- Duration: ${this.durationFrames} frames | Easing: ${this.easingType} -->`);
         lines.push('');
         
         // Initial Enable States
+        // Disable->Enable: Enable at start (unless late enable); Enable->Disable: Keep enabled until early disable or end
         lines.push('<!-- Initial Enable States -->');
         for (let i = 0; i < 4; i++) {
             const initial = this.initialStates[i];
             const final = this.finalStates[i];
             const ss = initial.superSource;
-            const enable = (initial.enable || final.enable) ? 'True' : 'False';
+            
+            // Determine if box should be enabled at start
+            let enableAtStart = initial.enable || final.enable;
+            // If Disable->Enable with late enable, don't enable at start
+            if (!initial.enable && final.enable && timing.lateEnable[i] !== undefined) {
+                enableAtStart = false;
+            }
+            
+            const enable = enableAtStart ? 'True' : 'False';
             lines.push(`<Op id="SuperSourceV2BoxEnable" superSource="${ss}" boxIndex="${i}" enable="${enable}" />`);
         }
         lines.push('');
@@ -641,7 +876,28 @@ class TransitionGenerator {
             lines.push(`<!-- Frame ${frame}/${this.durationFrames} -->`);
             const t = frame / this.durationFrames;
             
+            // Check for late enable at this frame
             for (const boxIndex of animatingBoxes) {
+                if (timing.lateEnable[boxIndex] === frame) {
+                    const ss = this.initialStates[boxIndex].superSource;
+                    lines.push(`<!-- Late enable Box ${boxIndex} after overlap with larger box ends -->`);
+                    lines.push(`<Op id="SuperSourceV2BoxEnable" superSource="${ss}" boxIndex="${boxIndex}" enable="True" />`);
+                }
+            }
+            
+            // Check for early disable at this frame
+            for (const boxIndex of animatingBoxes) {
+                if (timing.earlyDisable[boxIndex] === frame) {
+                    const ss = this.initialStates[boxIndex].superSource;
+                    lines.push(`<!-- Early disable Box ${boxIndex} to avoid visual overlap with larger box -->`);
+                    lines.push(`<Op id="SuperSourceV2BoxEnable" superSource="${ss}" boxIndex="${boxIndex}" enable="False" />`);
+                }
+            }
+            
+            for (const boxIndex of animatingBoxes) {
+                // Skip if not enabled at this frame
+                if (!this.isBoxEnabledAtFrame(boxIndex, frame, timing)) continue;
+                
                 const initial = this.initialStates[boxIndex];
                 const final = this.finalStates[boxIndex];
                 const interpolated = this.interpolateBox(initial, final, t);
@@ -668,6 +924,10 @@ class TransitionGenerator {
         // Final States
         lines.push('<!-- Final States -->');
         for (let i = 0; i < 4; i++) {
+            // Skip if already handled by early disable or late enable
+            if (timing.earlyDisable[i] !== undefined) continue;
+            if (timing.lateEnable[i] !== undefined) continue;
+            
             const final = this.finalStates[i];
             const ss = final.superSource;
             const enable = final.enable ? 'True' : 'False';
@@ -833,8 +1093,9 @@ class BoxPreviewCanvas {
     }
     
     // Calculate box boundaries in canvas pixels
-    getBoxCanvasBounds(box) {
-        if (!box.enable) return null;
+    // allowDisabled: if true, also calculate bounds for disabled boxes
+    getBoxCanvasBounds(box, allowDisabled = false) {
+        if (!box.enable && !allowDisabled) return null;
         
         const baseW = box.size * BoxPreviewCanvas.SCREEN_WIDTH;
         const baseH = box.size * BoxPreviewCanvas.SCREEN_HEIGHT;
@@ -869,8 +1130,9 @@ class BoxPreviewCanvas {
     }
     
     // Detect what part of which box is at the given canvas position
-    // Returns: { boxIndex, type } or null
+    // Returns: { boxIndex, type, isDisabled } or null
     // type: 'move', 'corner-tl', 'corner-tr', 'corner-bl', 'corner-br', 'edge-left', 'edge-right', 'edge-top', 'edge-bottom'
+    // Layer order for hit testing: Enabled 0 > 1 > 2 > 3 > Disabled 0 > 1 > 2 > 3
     hitTest(canvasX, canvasY) {
         const states = this.getCurrentStates();
         if (!states) return null;
@@ -878,74 +1140,91 @@ class BoxPreviewCanvas {
         const EDGE = BoxPreviewCanvas.EDGE_HIT_ZONE;
         const CORNER = BoxPreviewCanvas.CORNER_HIT_ZONE;
         
-        // If a box is active, only test that box
-        const boxesToTest = AppState.activeBoxIndex !== null ? [AppState.activeBoxIndex] : [0, 1, 2, 3];
-        
-        // Check boxes from top to bottom (0 first since it's on top)
-        for (const i of boxesToTest) {
-            const box = states[i];
-            if (!box || !box.enable) continue;
-            
-            const bounds = this.getBoxCanvasBounds(box);
-            if (!bounds) continue;
+        // Helper function to test a single box
+        const testBox = (box, i) => {
+            const bounds = this.getBoxCanvasBounds(box, true); // Allow disabled boxes
+            if (!bounds) return null;
             
             const { left, top, right, bottom } = bounds;
             
             // Check if point is near/in the box
             if (canvasX < left - EDGE || canvasX > right + EDGE ||
                 canvasY < top - EDGE || canvasY > bottom + EDGE) {
-                continue;
+                return null;
             }
             
             // Check corners first (higher priority)
-            // Top-left corner
             if (canvasX >= left - CORNER && canvasX <= left + CORNER &&
                 canvasY >= top - CORNER && canvasY <= top + CORNER) {
-                return { boxIndex: i, type: 'corner-tl' };
+                return { boxIndex: i, type: 'corner-tl', isDisabled: !box.enable };
             }
-            // Top-right corner
             if (canvasX >= right - CORNER && canvasX <= right + CORNER &&
                 canvasY >= top - CORNER && canvasY <= top + CORNER) {
-                return { boxIndex: i, type: 'corner-tr' };
+                return { boxIndex: i, type: 'corner-tr', isDisabled: !box.enable };
             }
-            // Bottom-left corner
             if (canvasX >= left - CORNER && canvasX <= left + CORNER &&
                 canvasY >= bottom - CORNER && canvasY <= bottom + CORNER) {
-                return { boxIndex: i, type: 'corner-bl' };
+                return { boxIndex: i, type: 'corner-bl', isDisabled: !box.enable };
             }
-            // Bottom-right corner
             if (canvasX >= right - CORNER && canvasX <= right + CORNER &&
                 canvasY >= bottom - CORNER && canvasY <= bottom + CORNER) {
-                return { boxIndex: i, type: 'corner-br' };
+                return { boxIndex: i, type: 'corner-br', isDisabled: !box.enable };
             }
             
-            // Check edges (for mask adjustment)
-            // Left edge
+            // Check edges
             if (canvasX >= left - EDGE && canvasX <= left + EDGE &&
                 canvasY > top + CORNER && canvasY < bottom - CORNER) {
-                return { boxIndex: i, type: 'edge-left' };
+                return { boxIndex: i, type: 'edge-left', isDisabled: !box.enable };
             }
-            // Right edge
             if (canvasX >= right - EDGE && canvasX <= right + EDGE &&
                 canvasY > top + CORNER && canvasY < bottom - CORNER) {
-                return { boxIndex: i, type: 'edge-right' };
+                return { boxIndex: i, type: 'edge-right', isDisabled: !box.enable };
             }
-            // Top edge
             if (canvasY >= top - EDGE && canvasY <= top + EDGE &&
                 canvasX > left + CORNER && canvasX < right - CORNER) {
-                return { boxIndex: i, type: 'edge-top' };
+                return { boxIndex: i, type: 'edge-top', isDisabled: !box.enable };
             }
-            // Bottom edge
             if (canvasY >= bottom - EDGE && canvasY <= bottom + EDGE &&
                 canvasX > left + CORNER && canvasX < right - CORNER) {
-                return { boxIndex: i, type: 'edge-bottom' };
+                return { boxIndex: i, type: 'edge-bottom', isDisabled: !box.enable };
             }
             
             // Inside the box (move)
             if (canvasX > left && canvasX < right &&
                 canvasY > top && canvasY < bottom) {
-                return { boxIndex: i, type: 'move' };
+                return { boxIndex: i, type: 'move', isDisabled: !box.enable };
             }
+            
+            return null;
+        };
+        
+        // If a box is active, only test that box
+        if (AppState.activeBoxIndex !== null) {
+            const box = states[AppState.activeBoxIndex];
+            if (box) {
+                return testBox(box, AppState.activeBoxIndex);
+            }
+            return null;
+        }
+        
+        // Test in layer order: Enabled 0 > 1 > 2 > 3 > Disabled 0 > 1 > 2 > 3
+        // First pass: enabled boxes (top layer)
+        for (let i = 0; i < 4; i++) {
+            const box = states[i];
+            if (!box || !box.enable) continue;
+            const result = testBox(box, i);
+            if (result) return result;
+        }
+        
+        // Second pass: disabled boxes (bottom layer)
+        for (let i = 0; i < 4; i++) {
+            const box = states[i];
+            if (!box || box.enable) continue;
+            // Only test disabled boxes that should be shown (enabled in other mode)
+            const otherStates = AppState.viewMode === 'initial' ? AppState.finalStates : AppState.initialStates;
+            if (!otherStates[i] || !otherStates[i].enable) continue;
+            const result = testBox(box, i);
+            if (result) return result;
         }
         
         return null;
@@ -1492,8 +1771,11 @@ class BoxPreviewCanvas {
         ctx.fill();
     }
     
-    drawBox(box) {
-        if (!box.enable) return;
+    // Draw a single box with optional disabled state indicator
+    // isDisabledInOtherMode: true if this box is disabled in the other state (initial/final)
+    drawBox(box, isDisabledInOtherMode = false) {
+        // Allow drawing disabled boxes if they are enabled in the other mode (for ghost preview)
+        if (!box.enable && !isDisabledInOtherMode) return;
         
         const ctx = this.ctx;
         const color = BoxPreviewCanvas.BOX_COLORS[box.boxIndex];
@@ -1503,6 +1785,7 @@ class BoxPreviewCanvas {
         const isDragging = this.isDragging && this.dragBoxIndex === box.boxIndex;
         const isActive = AppState.activeBoxIndex === box.boxIndex;
         const isInteractive = AppState.viewMode !== 'transforming';
+        const isDisabled = !box.enable; // Currently disabled in this state
         
         // Calculate box dimensions with mask
         const baseW = box.size * BoxPreviewCanvas.SCREEN_WIDTH;
@@ -1526,16 +1809,24 @@ class BoxPreviewCanvas {
         const rectX = tl.x, rectY = tl.y;
         const rectW = br.x - tl.x, rectH = br.y - tl.y;
         
-        // Draw active box glow effect
+        // Draw active box highlight (subtle filled background only, no thick border)
         if (isActive && isInteractive) {
-            ctx.shadowColor = color;
-            ctx.shadowBlur = 15;
-            ctx.strokeStyle = color;
-            ctx.lineWidth = 3;
-            ctx.setLineDash([8, 4]);
-            ctx.strokeRect(rectX - 4, rectY - 4, rectW + 8, rectH + 8);
-            ctx.setLineDash([]);
-            ctx.shadowBlur = 0;
+            ctx.fillStyle = color + '25'; // Very subtle highlight
+            ctx.fillRect(rectX - 4, rectY - 4, rectW + 8, rectH + 8);
+        }
+        
+        // Determine fill opacity based on state
+        // Disabled boxes now use same opacity as enabled (70 for hover/active, 50 normal)
+        let fillOpacity, strokeOpacity;
+        if (isDisabled) {
+            fillOpacity = (isHovered || isDragging || isActive) ? '70' : '50';
+            strokeOpacity = (isHovered || isDragging || isActive) ? 'CC' : '99';
+        } else if (isHovered || isDragging || isActive) {
+            fillOpacity = '70';
+            strokeOpacity = 'FF';
+        } else {
+            fillOpacity = '50';
+            strokeOpacity = 'CC';
         }
         
         // Draw box with shadow
@@ -1543,22 +1834,31 @@ class BoxPreviewCanvas {
         ctx.shadowBlur = (isHovered || isDragging || isActive) ? 12 : 8;
         ctx.shadowOffsetX = 2;
         ctx.shadowOffsetY = 2;
-        ctx.fillStyle = color + ((isHovered || isDragging || isActive) ? '70' : '50');
+        ctx.fillStyle = color + fillOpacity;
         ctx.fillRect(rectX, rectY, rectW, rectH);
         ctx.shadowColor = 'transparent';
-        ctx.strokeStyle = color;
+        
+        // Draw border - dashed for disabled boxes, solid for enabled
+        ctx.strokeStyle = color + strokeOpacity;
         ctx.lineWidth = (isHovered || isDragging || isActive) ? 3 : 2;
+        if (isDisabled) {
+            ctx.setLineDash([6, 4]); // Dashed line for disabled
+        } else {
+            ctx.setLineDash([]);
+        }
         ctx.strokeRect(rectX, rectY, rectW, rectH);
+        ctx.setLineDash([]); // Reset dash
         
         // Draw interaction handles when interactive and (hovered/dragging/active)
+        // Now also works for disabled boxes
         if (isInteractive && (isHovered || isDragging || isActive)) {
-            this.drawInteractionHandles(box, rectX, rectY, rectW, rectH, color);
+            this.drawInteractionHandles(box, rectX, rectY, rectW, rectH, color, isActive);
         }
         
         // Draw center point
         const center = this.coordToCanvas(box.xPosition, box.yPosition);
         ctx.fillStyle = '#FFFFFF';
-        ctx.strokeStyle = color;
+        ctx.strokeStyle = color + (isDisabled ? '99' : 'FF');
         ctx.lineWidth = 2;
         ctx.beginPath();
         ctx.arc(center.x, center.y, 5, 0, 2 * Math.PI);
@@ -1601,16 +1901,16 @@ class BoxPreviewCanvas {
             }
         }
         
-        // Draw label
+        // Draw label (more transparent for disabled)
         ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
         ctx.beginPath();
         ctx.roundRect(lx - LW / 2, ly - LH / 2, LW, LH, 4);
         ctx.fill();
         
-        ctx.fillStyle = '#1F2937';
+        ctx.fillStyle = isDisabled ? '#6B7280' : '#1F2937';
         ctx.font = 'bold 11px Inter, sans-serif';
         ctx.textAlign = 'center';
-        ctx.fillText(`Box ${box.boxIndex}`, lx, ly - 3);
+        ctx.fillText(`Box ${box.boxIndex}${isDisabled ? ' (Off)' : ''}`, lx, ly - 3);
         
         ctx.fillStyle = '#6B7280';
         ctx.font = '10px Inter, sans-serif';
@@ -1618,7 +1918,7 @@ class BoxPreviewCanvas {
     }
     
     // Draw interaction handles (corners for resize, edges highlighted for mask)
-    drawInteractionHandles(box, rectX, rectY, rectW, rectH, color) {
+    drawInteractionHandles(box, rectX, rectY, rectW, rectH, color, isActiveBox = false) {
         const ctx = this.ctx;
         const CORNER_SIZE = 8;
         const EDGE_HANDLE_WIDTH = 24;  // Width of edge handle rectangle
@@ -1635,7 +1935,8 @@ class BoxPreviewCanvas {
         
         corners.forEach(corner => {
             const isActive = activeType === corner.type;
-            ctx.fillStyle = isActive ? color : '#FFFFFF';
+            // For active box, always fill with color; otherwise white when not active
+            ctx.fillStyle = (isActive || isActiveBox) ? color : '#FFFFFF';
             ctx.strokeStyle = color;
             ctx.lineWidth = 2;
             ctx.beginPath();
@@ -1678,7 +1979,8 @@ class BoxPreviewCanvas {
         
         edgeHandles.forEach(handle => {
             const isActive = activeType === handle.type;
-            ctx.fillStyle = isActive ? color : '#FFFFFF';
+            // For active box, always fill with color; otherwise white when not active
+            ctx.fillStyle = (isActive || isActiveBox) ? color : '#FFFFFF';
             ctx.strokeStyle = color;
             ctx.lineWidth = 2;
             ctx.beginPath();
@@ -1727,26 +2029,58 @@ class BoxPreviewCanvas {
         this.drawGrid();
         
         // Draw boxes based on current view mode (read from AppState)
-        // Draw in reverse order: Box 3 first (bottom), Box 0 last (top)
-        // This ensures Box 0 is always on top, Box 3 is always at bottom
+        // Layer order: Enabled 0 > 1 > 2 > 3 > Disabled 0 > 1 > 2 > 3
+        // Draw in reverse order so higher priority boxes are drawn last (on top)
         const drawOrder = [3, 2, 1, 0];
         
         if (AppState.viewMode === 'initial') {
+            // First pass: draw disabled boxes (those enabled in final but not in initial) as ghosts
+            // These go below all enabled boxes
             for (const i of drawOrder) {
-                if (AppState.initialStates[i]) {
-                    this.drawBox(AppState.initialStates[i]);
+                const initialBox = AppState.initialStates[i];
+                const finalBox = AppState.finalStates[i];
+                if (initialBox && !initialBox.enable && finalBox && finalBox.enable) {
+                    // This box is disabled in initial but enabled in final - draw as ghost
+                    this.drawBox(initialBox, true);
+                }
+            }
+            // Second pass: draw enabled boxes (on top of disabled)
+            for (const i of drawOrder) {
+                if (AppState.initialStates[i] && AppState.initialStates[i].enable) {
+                    this.drawBox(AppState.initialStates[i], false);
                 }
             }
         } else if (AppState.viewMode === 'final') {
+            // First pass: draw disabled boxes (those enabled in initial but not in final) as ghosts
             for (const i of drawOrder) {
-                if (AppState.finalStates[i]) {
-                    this.drawBox(AppState.finalStates[i]);
+                const initialBox = AppState.initialStates[i];
+                const finalBox = AppState.finalStates[i];
+                if (finalBox && !finalBox.enable && initialBox && initialBox.enable) {
+                    // This box is disabled in final but enabled in initial - draw as ghost
+                    this.drawBox(finalBox, true);
+                }
+            }
+            // Second pass: draw enabled boxes
+            for (const i of drawOrder) {
+                if (AppState.finalStates[i] && AppState.finalStates[i].enable) {
+                    this.drawBox(AppState.finalStates[i], false);
                 }
             }
         } else if (AppState.viewMode === 'transforming' && this.transformingStates) {
+            // During transition, boxes have their enable state set by interpolation
+            // Draw disabled boxes first (bottom layer), then enabled boxes (top layer)
+            // First pass: disabled boxes
             for (const i of drawOrder) {
-                if (this.transformingStates[i]) {
-                    this.drawBox(this.transformingStates[i]);
+                const box = this.transformingStates[i];
+                if (box && !box.enable) {
+                    this.drawBox(box, false);
+                }
+            }
+            // Second pass: enabled boxes
+            for (const i of drawOrder) {
+                const box = this.transformingStates[i];
+                if (box && box.enable) {
+                    this.drawBox(box, false);
                 }
             }
         }
