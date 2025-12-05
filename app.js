@@ -179,7 +179,7 @@ class BoxState {
 }
 
 // ============== Global Application State ==============
-// Single source of truth for all box data
+// Pure data storage - single source of truth for all box data
 
 const AppState = {
     // Box states - the ONLY source of truth
@@ -203,121 +203,20 @@ const AppState = {
     // Active box for canvas interaction (null = any)
     activeBoxIndex: null,
     
-    // Registered update callbacks
-    _listeners: [],
+    // Transforming states for animation preview
+    transformingStates: null,
     
     // Get current editable states based on view mode
     getCurrentStates() {
+        if (this.viewMode === 'transforming' && this.transformingStates) {
+            return this.transformingStates;
+        }
         return this.viewMode === 'initial' ? this.initialStates : this.finalStates;
     },
     
-    // Update a single box property and notify listeners
-    updateBox(mode, boxIndex, property, value) {
-        const states = mode === 'initial' ? this.initialStates : this.finalStates;
-        if (boxIndex >= 0 && boxIndex < 4 && states[boxIndex]) {
-            states[boxIndex][property] = value;
-            this.notifyListeners('box', { mode, boxIndex, property, value });
-        }
-    },
-    
-    // Update entire box state
-    updateBoxState(mode, boxIndex, newState) {
-        const states = mode === 'initial' ? this.initialStates : this.finalStates;
-        if (boxIndex >= 0 && boxIndex < 4) {
-            states[boxIndex].copyFrom(newState);
-            this.notifyListeners('box', { mode, boxIndex });
-        }
-    },
-    
-    // Load states from parsed XML
-    loadStates(mode, parsedStates) {
-        const states = mode === 'initial' ? this.initialStates : this.finalStates;
-        for (let i = 0; i < 4; i++) {
-            if (parsedStates[i]) {
-                states[i].copyFrom(parsedStates[i]);
-            } else {
-                states[i].reset();
-            }
-        }
-        this.notifyListeners('load', { mode });
-    },
-    
-    // Clear states for a mode
-    clearStates(mode) {
-        const states = mode === 'initial' ? this.initialStates : this.finalStates;
-        for (let i = 0; i < 4; i++) {
-            states[i].reset();
-        }
-        this.notifyListeners('clear', { mode });
-    },
-    
-    // Reset single box
-    resetBox(mode, boxIndex) {
-        const states = mode === 'initial' ? this.initialStates : this.finalStates;
-        if (boxIndex >= 0 && boxIndex < 4) {
-            states[boxIndex].reset();
-            this.linkStates[boxIndex] = { lr: true, tb: true };
-            this.notifyListeners('reset', { mode, boxIndex });
-        }
-    },
-    
-    // Swap initial and final states
-    swapStates() {
-        for (let i = 0; i < 4; i++) {
-            const temp = this.initialStates[i].clone();
-            this.initialStates[i].copyFrom(this.finalStates[i]);
-            this.finalStates[i].copyFrom(temp);
-        }
-        this.notifyListeners('swap', {});
-    },
-    
-    // Set view mode
-    setViewMode(mode) {
-        this.viewMode = mode;
-        this.notifyListeners('viewMode', { mode });
-    },
-    
-    // Set drag precision
-    setDragPrecision(precision) {
-        this.dragPrecision = precision;
-        this.notifyListeners('precision', { precision });
-    },
-    
-    // Toggle link state
-    toggleLink(boxIndex, linkType) {
-        this.linkStates[boxIndex][linkType] = !this.linkStates[boxIndex][linkType];
-        // Sync values if linking
-        if (this.linkStates[boxIndex][linkType]) {
-            const states = this.getCurrentStates();
-            if (linkType === 'lr') {
-                states[boxIndex].maskRight = states[boxIndex].maskLeft;
-            } else if (linkType === 'tb') {
-                states[boxIndex].maskBottom = states[boxIndex].maskTop;
-            }
-        }
-        this.notifyListeners('link', { boxIndex, linkType });
-    },
-    
-    // Register a listener for state changes
-    addListener(callback) {
-        this._listeners.push(callback);
-    },
-    
-    // Remove a listener
-    removeListener(callback) {
-        const idx = this._listeners.indexOf(callback);
-        if (idx !== -1) this._listeners.splice(idx, 1);
-    },
-    
-    // Notify all listeners of a change
-    notifyListeners(eventType, data) {
-        for (const listener of this._listeners) {
-            try {
-                listener(eventType, data);
-            } catch (e) {
-                console.error('Listener error:', e);
-            }
-        }
+    // Get editable states (never transforming)
+    getEditableStates() {
+        return this.viewMode === 'initial' ? this.initialStates : this.finalStates;
     },
     
     // Snap value based on precision (for position)
@@ -362,6 +261,204 @@ const AppState = {
         }
         
         return lines.join('\n');
+    }
+};
+
+// ============== Global App Controller ==============
+// Single point of control for all UI updates
+
+const App = {
+    // References to UI components (set during init)
+    previewCanvas: null,
+    boxControlPanel: null,
+    initialXmlEl: null,
+    finalXmlEl: null,
+    mainApp: null, // SuperSourceTransitionApp instance
+    
+    // Initialize references
+    init(mainApp) {
+        this.mainApp = mainApp;
+        this.previewCanvas = mainApp.previewCanvas;
+        this.boxControlPanel = mainApp.boxControlPanel;
+        this.initialXmlEl = mainApp.initialXmlEl;
+        this.finalXmlEl = mainApp.finalXmlEl;
+    },
+    
+    /**
+     * UNIFIED UPDATE FUNCTION
+     * All data changes should eventually call this function
+     * 
+     * @param {string} source - What triggered the update (for debugging/optimization)
+     *                          'canvas' | 'panel' | 'xml' | 'mode' | 'load' | 'reset' | 'swap'
+     * @param {object} options - Optional parameters
+     *                          { boxIndex, skipCanvas, skipPanel, skipXml, skipAutoGenerate }
+     */
+    update(source = 'unknown', options = {}) {
+        const { 
+            boxIndex = null,        // Specific box that changed (null = all)
+            skipCanvas = false,     // Skip canvas redraw
+            skipPanel = false,      // Skip control panel update
+            skipXml = false,        // Skip XML textarea update
+            skipAutoGenerate = false // Skip auto-generate
+        } = options;
+        
+        // 1. Redraw canvas preview
+        if (!skipCanvas && this.previewCanvas) {
+            this.previewCanvas.redraw();
+        }
+        
+        // 2. Update control panel UI
+        if (!skipPanel && this.boxControlPanel && AppState.viewMode !== 'transforming') {
+            if (boxIndex !== null) {
+                this.boxControlPanel.updateBoxUI(boxIndex, AppState.getCurrentStates()[boxIndex]);
+            } else {
+                this.boxControlPanel.updateUI();
+            }
+        }
+        
+        // 3. Update XML textareas
+        if (!skipXml && AppState.viewMode !== 'transforming') {
+            this.syncXmlTextareas();
+        }
+        
+        // 4. Try auto-generate transition
+        if (!skipAutoGenerate && this.mainApp) {
+            this.mainApp.tryAutoGenerate();
+        }
+    },
+    
+    // Sync XML textareas with current state
+    syncXmlTextareas() {
+        if (this.initialXmlEl) {
+            this.initialXmlEl.value = AppState.generateXML('initial');
+        }
+        if (this.finalXmlEl) {
+            this.finalXmlEl.value = AppState.generateXML('final');
+        }
+    },
+    
+    // ====== High-level state change methods ======
+    // These modify AppState and then call update()
+    
+    // Update a box property
+    setBoxProperty(boxIndex, property, value) {
+        if (AppState.viewMode === 'transforming') return;
+        
+        const states = AppState.getEditableStates();
+        states[boxIndex][property] = value;
+        
+        // Handle linked mask properties
+        if (property.startsWith('mask')) {
+            this.handleLinkedMask(boxIndex, property, value);
+        }
+        
+        this.update('panel', { boxIndex });
+    },
+    
+    // Handle linked mask values
+    handleLinkedMask(boxIndex, property, value) {
+        const states = AppState.getEditableStates();
+        const links = AppState.linkStates[boxIndex];
+        
+        if (property === 'maskLeft' && links.lr) {
+            states[boxIndex].maskRight = value;
+        } else if (property === 'maskRight' && links.lr) {
+            states[boxIndex].maskLeft = value;
+        } else if (property === 'maskTop' && links.tb) {
+            states[boxIndex].maskBottom = value;
+        } else if (property === 'maskBottom' && links.tb) {
+            states[boxIndex].maskTop = value;
+        }
+    },
+    
+    // Toggle link state
+    toggleLink(boxIndex, linkType) {
+        AppState.linkStates[boxIndex][linkType] = !AppState.linkStates[boxIndex][linkType];
+        
+        // Sync values if linking
+        if (AppState.linkStates[boxIndex][linkType]) {
+            const states = AppState.getEditableStates();
+            if (linkType === 'lr') {
+                states[boxIndex].maskRight = states[boxIndex].maskLeft;
+            } else if (linkType === 'tb') {
+                states[boxIndex].maskBottom = states[boxIndex].maskTop;
+            }
+            this.update('panel', { boxIndex });
+        }
+    },
+    
+    // Load states from parsed XML
+    loadStates(mode, parsedStates) {
+        const states = mode === 'initial' ? AppState.initialStates : AppState.finalStates;
+        for (let i = 0; i < 4; i++) {
+            if (parsedStates[i]) {
+                states[i].copyFrom(parsedStates[i]);
+            } else {
+                states[i].reset();
+            }
+        }
+        this.update('load', { skipXml: true }); // Don't regenerate XML we just loaded
+    },
+    
+    // Clear states for a mode
+    clearStates(mode) {
+        const states = mode === 'initial' ? AppState.initialStates : AppState.finalStates;
+        for (let i = 0; i < 4; i++) {
+            states[i].reset();
+        }
+        this.update('reset');
+    },
+    
+    // Reset single box
+    resetBox(boxIndex) {
+        if (AppState.viewMode === 'transforming') return;
+        
+        const states = AppState.getEditableStates();
+        states[boxIndex].reset();
+        AppState.linkStates[boxIndex] = { lr: true, tb: true };
+        
+        this.update('reset', { boxIndex });
+    },
+    
+    // Swap initial and final states
+    swapStates() {
+        for (let i = 0; i < 4; i++) {
+            const temp = AppState.initialStates[i].clone();
+            AppState.initialStates[i].copyFrom(AppState.finalStates[i]);
+            AppState.finalStates[i].copyFrom(temp);
+        }
+        this.update('swap');
+    },
+    
+    // Set view mode
+    setViewMode(mode) {
+        AppState.viewMode = mode;
+        this.update('mode', { skipXml: true, skipAutoGenerate: true });
+    },
+    
+    // Set drag precision
+    setDragPrecision(precision) {
+        AppState.dragPrecision = precision;
+        // Precision change doesn't need full update
+    },
+    
+    // Set transforming states for animation preview
+    setTransformingStates(states) {
+        AppState.transformingStates = states;
+        AppState.viewMode = 'transforming';
+        
+        // Update canvas transforming states
+        if (this.previewCanvas) {
+            this.previewCanvas.transformingStates = states;
+        }
+        
+        // Redraw canvas
+        this.update('mode', { skipXml: true, skipAutoGenerate: true, skipPanel: true });
+        
+        // Update panel with transforming display
+        if (this.boxControlPanel) {
+            this.boxControlPanel.updateTransformingDisplay(states);
+        }
     }
 };
 
@@ -676,17 +773,6 @@ class BoxPreviewCanvas {
         
         // Bind mouse events
         this.bindMouseEvents();
-        
-        // Register as AppState listener
-        AppState.addListener((eventType, data) => this.onAppStateChange(eventType, data));
-    }
-    
-    // Handle AppState changes
-    onAppStateChange(eventType, data) {
-        // Redraw on any state change
-        if (['box', 'load', 'clear', 'reset', 'swap', 'viewMode', 'link'].includes(eventType)) {
-            this.redraw();
-        }
     }
     
     // Get current states based on view mode (from AppState)
@@ -793,7 +879,7 @@ class BoxPreviewCanvas {
         const CORNER = BoxPreviewCanvas.CORNER_HIT_ZONE;
         
         // If a box is active, only test that box
-        const boxesToTest = this.activeBoxIndex !== null ? [this.activeBoxIndex] : [0, 1, 2, 3];
+        const boxesToTest = AppState.activeBoxIndex !== null ? [AppState.activeBoxIndex] : [0, 1, 2, 3];
         
         // Check boxes from top to bottom (0 first since it's on top)
         for (const i of boxesToTest) {
@@ -944,8 +1030,9 @@ class BoxPreviewCanvas {
         const hitInfo = this.hitTest(pos.x, pos.y);
         
         // Only handle clicks outside any box to deactivate
-        if (!hitInfo && this.activeBoxIndex !== null) {
-            this.activeBoxIndex = null;
+        if (!hitInfo && AppState.activeBoxIndex !== null) {
+            console.log(AppState.activeBoxIndex)
+            AppState.activeBoxIndex = null;
             toast.info('Box 解锁', '现在可以与任意 Box 交互');
             this.redraw();
         }
@@ -960,13 +1047,13 @@ class BoxPreviewCanvas {
         
         if (hitInfo) {
             // Toggle active box
-            if (this.activeBoxIndex === hitInfo.boxIndex) {
+            if (AppState.activeBoxIndex === hitInfo.boxIndex) {
                 // Double-clicking on already active box - deactivate
-                this.activeBoxIndex = null;
+                AppState.activeBoxIndex = null;
                 toast.info('Box 解锁', '现在可以与任意 Box 交互');
             } else {
                 // Activate this box
-                this.activeBoxIndex = hitInfo.boxIndex;
+                AppState.activeBoxIndex = hitInfo.boxIndex;
                 toast.info('Box 锁定', `已锁定到 Box ${hitInfo.boxIndex}，双击或点击空白解锁`);
             }
             this.redraw();
@@ -1071,8 +1158,8 @@ class BoxPreviewCanvas {
                 break;
         }
         
-        // Notify AppState of change (this will trigger UI updates)
-        AppState.notifyListeners('box', { mode: AppState.viewMode, boxIndex: this.dragBoxIndex });
+        // Use unified App.update() - skip panel update during drag for performance
+        App.update('canvas', { boxIndex: this.dragBoxIndex });
     }
     
     // Handle move operation
@@ -1414,7 +1501,7 @@ class BoxPreviewCanvas {
         // Check if this box is being hovered or dragged
         const isHovered = this.hoverInfo && this.hoverInfo.boxIndex === box.boxIndex;
         const isDragging = this.isDragging && this.dragBoxIndex === box.boxIndex;
-        const isActive = this.activeBoxIndex === box.boxIndex;
+        const isActive = AppState.activeBoxIndex === box.boxIndex;
         const isInteractive = AppState.viewMode !== 'transforming';
         
         // Calculate box dimensions with mask
@@ -1666,7 +1753,7 @@ class BoxPreviewCanvas {
     }
     
     clear() {
-        // Clear is now handled by AppState.clearStates()
+        // Clear is now handled by App.clearStates()
         this.drawGrid();
     }
 }
@@ -1842,31 +1929,7 @@ class BoxControlPanel {
         
         this.initElements();
         this.bindEvents();
-        
-        // Register as AppState listener
-        this._onAppStateChange = this.onAppStateChange.bind(this);
-        AppState.addListener(this._onAppStateChange);
-        
         this.updateUI();
-    }
-    
-    // Handle AppState changes
-    onAppStateChange(eventType, data) {
-        switch (eventType) {
-            case 'box':
-            case 'load':
-            case 'clear':
-            case 'reset':
-            case 'swap':
-                this.updateUI();
-                break;
-            case 'viewMode':
-                this.setMode(data.mode);
-                break;
-            case 'link':
-                this.updateLinkButtonUI(data.boxIndex);
-                break;
-        }
     }
     
     // Update link button UI for a specific box
@@ -2020,15 +2083,14 @@ class BoxControlPanel {
         if (AppState.viewMode === 'transforming') return;
         
         const boxIndex = parseInt(e.target.dataset.box);
-        AppState.updateBox(AppState.viewMode, boxIndex, 'enable', e.target.checked);
-        this.syncToApp();
+        App.setBoxProperty(boxIndex, 'enable', e.target.checked);
     }
     
     onMaskEnableChange(e) {
         if (AppState.viewMode === 'transforming') return;
         
         const boxIndex = parseInt(e.target.dataset.box);
-        AppState.updateBox(AppState.viewMode, boxIndex, 'maskEnable', e.target.checked);
+        App.setBoxProperty(boxIndex, 'maskEnable', e.target.checked);
         
         // Update mask controls visibility
         const panel = document.querySelector(`.box-control-panel[data-box="${boxIndex}"]`);
@@ -2036,8 +2098,6 @@ class BoxControlPanel {
         if (maskControls) {
             maskControls.classList.toggle('enabled', e.target.checked);
         }
-        
-        this.syncToApp();
     }
     
     onSliderInput(e) {
@@ -2074,19 +2134,11 @@ class BoxControlPanel {
     
     // Update parameter from number input - don't update the input field itself
     updateParamFromInput(boxIndex, param, value) {
-        const states = this.getCurrentStates();
+        const states = AppState.getEditableStates();
         states[boxIndex][param] = value;
         
         // Handle linked parameters
-        if (param === 'maskLeft' && AppState.linkStates[boxIndex].lr) {
-            states[boxIndex].maskRight = value;
-        } else if (param === 'maskRight' && AppState.linkStates[boxIndex].lr) {
-            states[boxIndex].maskLeft = value;
-        } else if (param === 'maskTop' && AppState.linkStates[boxIndex].tb) {
-            states[boxIndex].maskBottom = value;
-        } else if (param === 'maskBottom' && AppState.linkStates[boxIndex].tb) {
-            states[boxIndex].maskTop = value;
-        }
+        App.handleLinkedMask(boxIndex, param, value);
         
         // Update slider only (not the input field that triggered this)
         const panel = document.querySelector(`.box-control-panel[data-box="${boxIndex}"]`);
@@ -2118,31 +2170,22 @@ class BoxControlPanel {
             }
         }
         
-        this.syncToApp();
+        // Use App.update with skipPanel to avoid recursive update
+        App.update('panel', { boxIndex, skipPanel: true });
     }
     
     updateParam(boxIndex, param, value) {
-        const states = this.getCurrentStates();
+        const states = AppState.getEditableStates();
         states[boxIndex][param] = value;
         
         // Handle linked parameters
-        if (param === 'maskLeft' && AppState.linkStates[boxIndex].lr) {
-            states[boxIndex].maskRight = value;
-        } else if (param === 'maskRight' && AppState.linkStates[boxIndex].lr) {
-            states[boxIndex].maskLeft = value;
-        } else if (param === 'maskTop' && AppState.linkStates[boxIndex].tb) {
-            states[boxIndex].maskBottom = value;
-        } else if (param === 'maskBottom' && AppState.linkStates[boxIndex].tb) {
-            states[boxIndex].maskTop = value;
-        }
+        App.handleLinkedMask(boxIndex, param, value);
         
         // Update UI
         this.updateBoxUI(boxIndex, states[boxIndex]);
         
-        // Notify AppState of changes
-        AppState.notifyListeners('box', { mode: AppState.viewMode, boxIndex });
-        
-        this.syncToApp();
+        // Use App.update with skipPanel to avoid recursive update (we just updated UI)
+        App.update('panel', { boxIndex, skipPanel: true });
     }
     
     onLinkToggle(e) {
@@ -2150,17 +2193,11 @@ class BoxControlPanel {
         const boxIndex = parseInt(btn.dataset.box);
         const linkType = btn.dataset.link;
         
-        // Use AppState.toggleLink which handles syncing values
-        AppState.toggleLink(boxIndex, linkType);
+        // Use App.toggleLink which handles syncing values and update
+        App.toggleLink(boxIndex, linkType);
         
         // Update button state
         btn.classList.toggle('active', AppState.linkStates[boxIndex][linkType]);
-        
-        // Update UI if values were synced
-        if (AppState.linkStates[boxIndex][linkType]) {
-            this.updateBoxUI(boxIndex, this.getCurrentStates()[boxIndex]);
-            this.syncToApp();
-        }
     }
     
     // Copy parameter button click handler
@@ -2204,22 +2241,14 @@ class BoxControlPanel {
     pasteParam(boxIndex, param) {
         if (AppState.viewMode === 'transforming') return;
         
-        const states = this.getCurrentStates();
+        const states = AppState.getEditableStates();
         states[boxIndex][param] = this.clipboard.value;
         
         // Handle linked parameters
-        if (param === 'maskLeft' && AppState.linkStates[boxIndex].lr) {
-            states[boxIndex].maskRight = this.clipboard.value;
-        } else if (param === 'maskRight' && AppState.linkStates[boxIndex].lr) {
-            states[boxIndex].maskLeft = this.clipboard.value;
-        } else if (param === 'maskTop' && AppState.linkStates[boxIndex].tb) {
-            states[boxIndex].maskBottom = this.clipboard.value;
-        } else if (param === 'maskBottom' && AppState.linkStates[boxIndex].tb) {
-            states[boxIndex].maskTop = this.clipboard.value;
-        }
+        App.handleLinkedMask(boxIndex, param, this.clipboard.value);
         
-        this.updateBoxUI(boxIndex, states[boxIndex]);
-        this.syncToApp();
+        // Update via App.update
+        App.update('panel', { boxIndex });
         
         showToast('success', '已粘贴', `${this.getParamDisplayName(param)} → Box ${boxIndex}`);
         
@@ -2278,12 +2307,12 @@ class BoxControlPanel {
     pasteBox(boxIndex) {
         if (AppState.viewMode === 'transforming') return;
         
-        const states = this.getCurrentStates();
+        const states = AppState.getEditableStates();
         states[boxIndex].copyFrom(this.clipboard.boxState);
         states[boxIndex].boxIndex = boxIndex; // Keep original boxIndex
         
-        this.updateBoxUI(boxIndex, states[boxIndex]);
-        this.syncToApp();
+        // Update via App.update
+        App.update('panel', { boxIndex });
         
         showToast('success', '已粘贴', `全部参数 → Box ${boxIndex}`);
         
@@ -2385,33 +2414,13 @@ class BoxControlPanel {
         }
     }
     
-    // Reset a single box to default state (now delegates to AppState)
+    // Reset a single box to default state (delegates to App)
     resetBox(boxIndex) {
         if (AppState.viewMode === 'transforming') return;
         
-        AppState.resetBox(AppState.viewMode, boxIndex);
-        this.syncToApp();
+        App.resetBox(boxIndex);
         
         toast.info('已重置', `Box ${boxIndex} 已恢复默认值`);
-    }
-    
-    // Sync current state to app (update XML textarea and preview)
-    syncToApp() {
-        if (AppState.viewMode === 'transforming') return;
-        
-        const xml = AppState.generateXML(AppState.viewMode);
-        
-        if (AppState.viewMode === 'initial') {
-            this.app.initialXmlEl.value = xml;
-        } else {
-            this.app.finalXmlEl.value = xml;
-        }
-        
-        // Redraw canvas
-        this.app.previewCanvas.redraw();
-        
-        // Try auto generate
-        this.app.tryAutoGenerate();
     }
 }
 
@@ -2436,8 +2445,11 @@ class SuperSourceTransitionApp {
         // Initialize Box Control Panel after elements are ready
         this.boxControlPanel = new BoxControlPanel(this);
         
+        // Initialize App controller with references
+        App.init(this);
+        
         // Initialize default drag precision
-        AppState.setDragPrecision('medium');
+        App.setDragPrecision('medium');
         this.updateSliderSteps('medium');
         
         // Initial draw
@@ -2584,8 +2596,8 @@ class SuperSourceTransitionApp {
             btn.classList.toggle('active', btn.dataset.precision === precision);
         });
         
-        // Update AppState precision (canvas reads from AppState)
-        AppState.setDragPrecision(precision);
+        // Update App precision
+        App.setDragPrecision(precision);
         
         // Update slider step attributes
         this.updateSliderSteps(precision);
@@ -2638,10 +2650,10 @@ class SuperSourceTransitionApp {
         
         this.updateSliderPosition();
         
-        // Update AppState viewMode (this will notify all listeners including canvas and control panel)
-        AppState.setViewMode(mode);
+        // Update via App.setViewMode (handles canvas redraw and panel update)
+        App.setViewMode(mode);
         
-        // Sync box control panel mode
+        // Sync box control panel mode (enable/disable state)
         if (this.boxControlPanel) {
             this.boxControlPanel.setMode(mode);
         }
@@ -2750,8 +2762,7 @@ class SuperSourceTransitionApp {
     previewInitial(silent = false) {
         const xml = this.initialXmlEl.value.trim();
         if (!xml) {
-            AppState.clearStates('initial');
-            this.previewCanvas.redraw();
+            App.clearStates('initial');
             if (!silent) toast.info('提示', '初始位置为空');
             return;
         }
@@ -2759,9 +2770,8 @@ class SuperSourceTransitionApp {
         try {
             const states = XMLParser.parseOps(xml);
             
-            // Load to AppState (this notifies all listeners)
-            AppState.loadStates('initial', states);
-            this.previewCanvas.redraw();
+            // Load via App (handles canvas redraw and panel update)
+            App.loadStates('initial', states);
             
             const enabledCount = Object.values(states).filter(b => b.enable).length;
             if (!silent) toast.success('预览成功', `Initial: ${enabledCount} 个启用的 Box`);
@@ -2773,8 +2783,7 @@ class SuperSourceTransitionApp {
     previewFinal(silent = false) {
         const xml = this.finalXmlEl.value.trim();
         if (!xml) {
-            AppState.clearStates('final');
-            this.previewCanvas.redraw();
+            App.clearStates('final');
             if (!silent) toast.info('提示', '最终位置为空');
             return;
         }
@@ -2782,9 +2791,8 @@ class SuperSourceTransitionApp {
         try {
             const states = XMLParser.parseOps(xml);
             
-            // Load to AppState (this notifies all listeners)
-            AppState.loadStates('final', states);
-            this.previewCanvas.redraw();
+            // Load via App (handles canvas redraw and panel update)
+            App.loadStates('final', states);
             
             const enabledCount = Object.values(states).filter(b => b.enable).length;
             if (!silent) toast.success('预览成功', `Final: ${enabledCount} 个启用的 Box`);
@@ -2795,16 +2803,14 @@ class SuperSourceTransitionApp {
     
     clearInitial() {
         this.initialXmlEl.value = '';
-        AppState.clearStates('initial');
-        this.previewCanvas.redraw();
+        App.clearStates('initial');
         this.hidePreviewControls();
         toast.info('已清空', '初始位置已清空');
     }
     
     clearFinal() {
         this.finalXmlEl.value = '';
-        AppState.clearStates('final');
-        this.previewCanvas.redraw();
+        App.clearStates('final');
         this.hidePreviewControls();
         toast.info('已清空', '最终位置已清空');
     }
@@ -2861,13 +2867,8 @@ class SuperSourceTransitionApp {
         this.initialXmlEl.value = final;
         this.finalXmlEl.value = initial;
         
-        // Swap in AppState (this handles state swapping and notifies listeners)
-        AppState.swapStates();
-        
-        // Redraw preview canvas
-        this.previewCanvas.redraw();
-        
-        this.tryAutoGenerate();
+        // Swap via App (handles state swap and UI update)
+        App.swapStates();
         
         toast.success('交换完成', 'Initial ↔ Final 已交换');
     }
@@ -2957,18 +2958,17 @@ class SuperSourceTransitionApp {
         if (!this.generator) return;
         
         if (this.currentFrame === 0) {
-            AppState.setViewMode('initial');
+            App.setViewMode('initial');
         } else if (this.currentFrame === this.totalFrames) {
-            AppState.setViewMode('final');
+            App.setViewMode('final');
         } else {
             const states = this.generator.getFrameStates(this.currentFrame);
-            this.previewCanvas.updateTransformingStates(states);
-            AppState.setViewMode('transforming');
-            
-            // Update box control panel with transforming states (read-only)
-            if (this.boxControlPanel) {
-                this.boxControlPanel.updateTransformingDisplay(states);
-            }
+            App.setTransformingStates(states);
+        }
+        
+        // Update box control panel mode (enable/disable state)
+        if (this.boxControlPanel) {
+            this.boxControlPanel.setMode(AppState.viewMode);
         }
     }
     
