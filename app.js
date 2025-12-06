@@ -2748,6 +2748,24 @@ class BoxControlPanel {
         }
     }
     
+    // Update slider step attributes based on precision
+    updateSliderSteps(precision) {
+        const posStep = precision === 'precise' ? 0.01 : (precision === 'medium' ? 1/6 : 1/3);
+        const sizeStep = precision === 'precise' ? 0.01 : (precision === 'medium' ? 1/18 : 1/9);
+        const maskStep = precision === 'precise' ? 0.1 : (precision === 'medium' ? 1 : 2);
+        
+        document.querySelectorAll('.box-slider').forEach(slider => {
+            const param = slider.dataset.param;
+            if (param === 'size') {
+                slider.step = sizeStep;
+            } else if (param === 'xPosition' || param === 'yPosition') {
+                slider.step = posStep;
+            } else if (param.startsWith('mask')) {
+                slider.step = maskStep;
+            }
+        });
+    }
+    
     // Reset a single box to default state (delegates to App)
     resetBox(boxIndex) {
         if (AppState.viewMode === 'transforming') return;
@@ -2758,12 +2776,16 @@ class BoxControlPanel {
     }
 }
 
+// ============== Main Application Class ==============
+
 class SuperSourceTransitionApp {
+    // ============== Initialization ==============
+    
     constructor() {
         this.previewCanvas = new BoxPreviewCanvas(document.getElementById('previewCanvas'));
         this.easingPreviewCanvas = new EasingPreviewCanvas(document.getElementById('easingPreviewCanvas'));
         
-        // Animation state
+        // Animation state (playback control, not Box data)
         this.generator = null;
         this.currentFrame = 0;
         this.totalFrames = 0;
@@ -2784,7 +2806,10 @@ class SuperSourceTransitionApp {
         
         // Initialize default drag precision
         App.setDragPrecision('medium');
-        this.updateSliderSteps('medium');
+        // Update slider steps for the initial precision
+        if (this.boxControlPanel) {
+            this.boxControlPanel.updateSliderSteps('medium');
+        }
         
         // Initial draw
         this.previewCanvas.drawGrid();
@@ -2923,6 +2948,8 @@ class SuperSourceTransitionApp {
         });
     }
     
+    // ============== Precision Control ==============
+    
     // Set drag precision for both canvas and control panel sliders
     setDragPrecision(precision) {
         // Update button states for both toggle groups
@@ -2930,12 +2957,15 @@ class SuperSourceTransitionApp {
             btn.classList.toggle('active', btn.dataset.precision === precision);
         });
         
-        // Update App precision
+        // Update App precision (affects canvas snapping)
         App.setDragPrecision(precision);
         
-        // Update slider step attributes
-        this.updateSliderSteps(precision);
+        // Update slider step attributes in control panel
+        if (this.boxControlPanel) {
+            this.boxControlPanel.updateSliderSteps(precision);
+        }
         
+        // Show feedback toast
         const precisionNames = {
             'precise': '精确 (无限制)',
             'medium': '中等 (位置 1/6, 大小 1/18)',
@@ -2944,45 +2974,25 @@ class SuperSourceTransitionApp {
         toast.info('拖动精度', precisionNames[precision]);
     }
     
-    // Update slider step attributes based on precision
-    updateSliderSteps(precision) {
-        const posStep = precision === 'precise' ? 0.01 : (precision === 'medium' ? 1/6 : 1/3);
-        const sizeStep = precision === 'precise' ? 0.01 : (precision === 'medium' ? 1/18 : 1/9);
-        const maskStep = precision === 'precise' ? 0.1 : (precision === 'medium' ? 1 : 2);
-        
-        document.querySelectorAll('.box-slider').forEach(slider => {
-            const param = slider.dataset.param;
-            if (param === 'size') {
-                slider.step = sizeStep;
-            } else if (param === 'xPosition' || param === 'yPosition') {
-                slider.step = posStep;
-            } else if (param.startsWith('mask')) {
-                slider.step = maskStep;
-            }
-        });
-    }
+    // ============== View Mode Management ==============
     
     setPreviewMode(mode) {
         // Stop playback when switching to initial or final
         this.pausePlayback();
         
-        // Update ALL toggle button states (both preview and box control sections)
-        this.allToggleBtns.forEach(b => b.classList.remove('active'));
-        
+        // Update frame position based on mode
         if (mode === 'initial') {
-            this.previewInitialToggleBtn.classList.add('active');
-            this.boxCtrlInitialToggleBtn.classList.add('active');
             this.currentFrame = 0;
         } else if (mode === 'final') {
-            this.previewFinalToggleBtn.classList.add('active');
-            this.boxCtrlFinalToggleBtn.classList.add('active');
             this.currentFrame = this.totalFrames;
-        } else if (mode === 'transforming') {
-            this.previewTransformingToggleBtn.classList.add('active');
-            this.boxCtrlTransformingToggleBtn.classList.add('active');
         }
+        // transforming mode keeps current frame
         
+        // Update slider position
         this.updateSliderPosition();
+        
+        // Update toggle button states
+        this.updateToggleButtonStates(mode);
         
         // Update via App.setViewMode (handles canvas redraw and panel update)
         App.setViewMode(mode);
@@ -2993,20 +3003,23 @@ class SuperSourceTransitionApp {
         }
     }
     
-    updateToggleButtons() {
+    // Update toggle button states based on mode
+    updateToggleButtonStates(mode) {
         this.allToggleBtns.forEach(b => b.classList.remove('active'));
         
-        if (this.currentFrame === 0) {
+        if (mode === 'initial') {
             this.previewInitialToggleBtn.classList.add('active');
             this.boxCtrlInitialToggleBtn.classList.add('active');
-        } else if (this.currentFrame === this.totalFrames) {
+        } else if (mode === 'final') {
             this.previewFinalToggleBtn.classList.add('active');
             this.boxCtrlFinalToggleBtn.classList.add('active');
-        } else {
+        } else if (mode === 'transforming') {
             this.previewTransformingToggleBtn.classList.add('active');
             this.boxCtrlTransformingToggleBtn.classList.add('active');
         }
     }
+    
+    // ============== Easing Configuration ==============
     
     initEasingOptions() {
         this.updateEasingOptions();
@@ -3031,6 +3044,8 @@ class SuperSourceTransitionApp {
         const easingType = this.easingTypeEl.value;
         this.easingPreviewCanvas.draw(easingType);
     }
+    
+    // ============== Debounce Utilities ==============
     
     debouncePreviewInitial = (() => {
         let timeout;
@@ -3062,6 +3077,8 @@ class SuperSourceTransitionApp {
         };
     })();
     
+    // ============== Transition Generation ==============
+    
     // Try to auto-generate transition if both XMLs are valid
     tryAutoGenerate() {
         const initialXml = this.initialXmlEl.value.trim();
@@ -3092,6 +3109,8 @@ class SuperSourceTransitionApp {
             // Invalid XML, don't auto-generate
         }
     }
+    
+    // ============== XML Operations ==============
     
     previewInitial(silent = false) {
         const xml = this.initialXmlEl.value.trim();
@@ -3157,24 +3176,19 @@ class SuperSourceTransitionApp {
             // Parse the XML first to validate and normalize
             const states = XMLParser.parseOps(xml);
             
-            // Generate formatted XML with all parameters
-            const lines = [];
+            // Load parsed states to ensure AppState is synced
+            const mode = type === 'initial' ? 'initial' : 'final';
+            const targetStates = mode === 'initial' ? AppState.initialStates : AppState.finalStates;
             for (let i = 0; i < 4; i++) {
-                const box = states[i] || new BoxState(i);
-                const ss = box.superSource;
-                
-                lines.push(`<Op id="SuperSourceV2BoxEnable" superSource="${ss}" boxIndex="${i}" enable="${box.enable ? 'True' : 'False'}" />`);
-                lines.push(`<Op id="SuperSourceV2BoxSize" superSource="${ss}" boxIndex="${i}" size="${box.size.toFixed(4)}"/>`);
-                lines.push(`<Op id="SuperSourceV2BoxXPosition" superSource="${ss}" boxIndex="${i}" xPosition="${box.xPosition.toFixed(4)}"/>`);
-                lines.push(`<Op id="SuperSourceV2BoxYPosition" superSource="${ss}" boxIndex="${i}" yPosition="${box.yPosition.toFixed(4)}"/>`);
-                lines.push(`<Op id="SuperSourceV2BoxMaskEnable" superSource="${ss}" boxIndex="${i}" enable="${box.maskEnable ? 'True' : 'False'}"/>`);
-                lines.push(`<Op id="SuperSourceV2BoxMaskLeft" superSource="${ss}" boxIndex="${i}" left="${box.maskLeft.toFixed(2)}"/>`);
-                lines.push(`<Op id="SuperSourceV2BoxMaskTop" superSource="${ss}" boxIndex="${i}" top="${box.maskTop.toFixed(2)}"/>`);
-                lines.push(`<Op id="SuperSourceV2BoxMaskRight" superSource="${ss}" boxIndex="${i}" right="${box.maskRight.toFixed(2)}"/>`);
-                lines.push(`<Op id="SuperSourceV2BoxMaskBottom" superSource="${ss}" boxIndex="${i}" bottom="${box.maskBottom.toFixed(2)}"/>`);
+                if (states[i]) {
+                    targetStates[i].copyFrom(states[i]);
+                } else {
+                    targetStates[i].reset();
+                }
             }
             
-            textarea.value = lines.join('\n');
+            // Generate formatted XML using AppState.generateXML()
+            textarea.value = AppState.generateXML(mode);
             
             // Update preview and box control panel
             if (type === 'initial') {
@@ -3206,6 +3220,8 @@ class SuperSourceTransitionApp {
         
         toast.success('交换完成', 'Initial ↔ Final 已交换');
     }
+    
+    // ============== Animation Generation ==============
     
     generate(silent = false) {
         const initialXml = this.initialXmlEl.value.trim();
@@ -3263,6 +3279,8 @@ class SuperSourceTransitionApp {
         }
     }
     
+    // ============== Animation Playback Control ==============
+    
     // Preview controls
     showPreviewControls() {
         this.previewControls.style.display = 'block';
@@ -3285,7 +3303,17 @@ class SuperSourceTransitionApp {
         this.currentFrame = parseInt(this.frameSlider.value);
         this.currentFrameLabel.textContent = this.currentFrame;
         this.updatePreviewForFrame();
-        this.updateToggleButtons();
+        
+        // Determine mode based on current frame
+        let mode;
+        if (this.currentFrame === 0) {
+            mode = 'initial';
+        } else if (this.currentFrame === this.totalFrames) {
+            mode = 'final';
+        } else {
+            mode = 'transforming';
+        }
+        this.updateToggleButtonStates(mode);
     }
     
     updatePreviewForFrame() {
@@ -3311,7 +3339,17 @@ class SuperSourceTransitionApp {
         this.currentFrame = Math.max(0, Math.min(this.totalFrames, this.currentFrame + delta));
         this.updateSliderPosition();
         this.updatePreviewForFrame();
-        this.updateToggleButtons();
+        
+        // Determine mode based on current frame
+        let mode;
+        if (this.currentFrame === 0) {
+            mode = 'initial';
+        } else if (this.currentFrame === this.totalFrames) {
+            mode = 'final';
+        } else {
+            mode = 'transforming';
+        }
+        this.updateToggleButtonStates(mode);
     }
     
     togglePlayPause() {
@@ -3364,13 +3402,25 @@ class SuperSourceTransitionApp {
             
             this.updateSliderPosition();
             this.updatePreviewForFrame();
-            this.updateToggleButtons();
+            
+            // Determine mode based on current frame
+            let mode;
+            if (this.currentFrame === 0) {
+                mode = 'initial';
+            } else if (this.currentFrame === this.totalFrames) {
+                mode = 'final';
+            } else {
+                mode = 'transforming';
+            }
+            this.updateToggleButtonStates(mode);
         }
         
         if (this.isPlaying) {
             this.animationId = requestAnimationFrame(() => this.animationLoop());
         }
     }
+    
+    // ============== File Operations ==============
     
     // Copy XML content from input panels
     copyXmlContent(type) {
