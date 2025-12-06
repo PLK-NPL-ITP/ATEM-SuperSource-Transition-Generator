@@ -204,10 +204,6 @@ body {
     line-height: 1;
 }
 
-.header-content {
-    display: inline-block;
-}
-
 .logo {
     display: flex;
     align-items: center;
