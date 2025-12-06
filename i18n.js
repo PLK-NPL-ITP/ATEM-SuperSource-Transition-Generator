@@ -49,7 +49,10 @@ const translations = {
             bottom: 'Bottom',
             copy: 'Copy',
             linkLR: 'Link Left/Right',
-            linkTB: 'Link Top/Bottom'
+            linkTB: 'Link Top/Bottom',
+            copyParam: 'Copy',
+            cancelCopy: 'Cancel Copy',
+            paste: 'Paste'
         },
         params: {
             frames: 'Transition Frames',
@@ -142,7 +145,34 @@ const translations = {
             languageSwitched: 'Language switched to English',
             themeSwitched: 'Theme switched',
             lightMode: 'Light Mode',
-            darkMode: 'Dark Mode'
+            darkMode: 'Dark Mode',
+            // Additional toast messages for app.js
+            boxUnlocked: 'Box Unlocked',
+            boxUnlockedMsg: 'Now you can interact with any box',
+            boxLocked: 'Box Locked',
+            boxLockedMsg: 'Locked to Box {0}, double-click or click empty area to unlock',
+            allParams: 'All parameters',
+            pasteToBox: 'Pasted to Box {0}',
+            copiedParam: 'Copied: {0}: {1}',
+            pastedParam: '{0} → Box {1}',
+            copiedBox: 'Copied all parameters of Box {0}',
+            pastedBox: 'All parameters → Box {0}',
+            copyAction: 'Copy',
+            pasteAction: 'Paste',
+            previewSuccess: 'Preview Success',
+            initialPreview: 'Initial: {0} enabled boxes',
+            finalPreview: 'Final: {0} enabled boxes',
+            parseInitialError: 'Failed to parse Initial XML: {0}',
+            parseFinalError: 'Failed to parse Final XML: {0}',
+            initialCleared: 'Initial position cleared',
+            finalCleared: 'Final position cleared',
+            generatedFrames: 'Generated {0} frames transition',
+            copyFailed: 'Copy failed',
+            saveFailed: 'Save failed',
+            fileDownloaded: 'File downloaded',
+            initialXmlCopied: 'Initial position XML copied to clipboard',
+            finalXmlCopied: 'Final position XML copied to clipboard',
+            outputInfo: 'Frames: {0} | Easing: {1} | Active Boxes: [{2}]'
         }
     },
     zh: {
@@ -184,7 +214,10 @@ const translations = {
             bottom: 'Bottom',
             copy: '复制',
             linkLR: '链接 Left/Right',
-            linkTB: '链接 Top/Bottom'
+            linkTB: '链接 Top/Bottom',
+            copyParam: '复制',
+            cancelCopy: '取消复制',
+            paste: '粘贴'
         },
         params: {
             frames: '过渡帧数',
@@ -277,7 +310,34 @@ const translations = {
             languageSwitched: '语言已切换为中文',
             themeSwitched: '主题已切换',
             lightMode: '亮色模式',
-            darkMode: '暗色模式'
+            darkMode: '暗色模式',
+            // Additional toast messages for app.js
+            boxUnlocked: 'Box 解锁',
+            boxUnlockedMsg: '现在可以与任意 Box 交互',
+            boxLocked: 'Box 锁定',
+            boxLockedMsg: '已锁定到 Box {0}，双击或点击空白解锁',
+            allParams: '全部参数',
+            pasteToBox: '全部参数 → Box {0}',
+            copiedParam: '已复制: {0}: {1}',
+            pastedParam: '{0} → Box {1}',
+            copiedBox: '已复制 Box {0} 全部参数',
+            pastedBox: '全部参数 → Box {0}',
+            copyAction: '复制',
+            pasteAction: '粘贴',
+            previewSuccess: '预览成功',
+            initialPreview: 'Initial: {0} 个启用的 Box',
+            finalPreview: 'Final: {0} 个启用的 Box',
+            parseInitialError: '解析初始位置 XML 失败: {0}',
+            parseFinalError: '解析最终位置 XML 失败: {0}',
+            initialCleared: '初始位置已清空',
+            finalCleared: '最终位置已清空',
+            generatedFrames: '已生成 {0} 帧过渡动画',
+            copyFailed: '复制失败',
+            saveFailed: '保存失败',
+            fileDownloaded: '文件已下载',
+            initialXmlCopied: '初始位置 XML 已复制到剪贴板',
+            finalXmlCopied: '最终位置 XML 已复制到剪贴板',
+            outputInfo: '帧数: {0} | 缓动: {1} | 活动Box: [{2}]'
         }
     }
 };
@@ -342,6 +402,45 @@ class I18nManager {
             }
         });
         
+        // Apply translations to elements with data-i18n-title attribute
+        document.querySelectorAll('[data-i18n-title]').forEach(element => {
+            const key = element.getAttribute('data-i18n-title');
+            const value = this.getNestedValue(t, key);
+            if (value) {
+                element.title = value;
+            }
+        });
+        
+        // Apply translations to elements with data-i18n-placeholder attribute
+        document.querySelectorAll('[data-i18n-placeholder]').forEach(element => {
+            const key = element.getAttribute('data-i18n-placeholder');
+            const value = this.getNestedValue(t, key);
+            if (value) {
+                element.placeholder = value;
+            }
+        });
+        
+        // Update copy/paste button titles based on class
+        document.querySelectorAll('.copy-param-btn').forEach(btn => {
+            btn.title = t.boxControl.copyParam;
+        });
+        
+        document.querySelectorAll('.copy-box-btn').forEach(btn => {
+            btn.title = t.boxControl.copyBox;
+        });
+        
+        document.querySelectorAll('.reset-box-btn').forEach(btn => {
+            btn.title = t.boxControl.resetBox;
+        });
+        
+        document.querySelectorAll('.link-btn[data-link="lr"]').forEach(btn => {
+            btn.title = t.boxControl.linkLR;
+        });
+        
+        document.querySelectorAll('.link-btn[data-link="tb"]').forEach(btn => {
+            btn.title = t.boxControl.linkTB;
+        });
+        
         // Update select options for easing category
         const easingCategoryEl = document.getElementById('easingCategory');
         if (easingCategoryEl) {
@@ -361,6 +460,15 @@ class I18nManager {
     
     t(key) {
         return this.getNestedValue(translations[this.currentLang], key) || key;
+    }
+    
+    // Format a translation string with placeholders {0}, {1}, etc.
+    tf(key, ...args) {
+        let text = this.t(key);
+        args.forEach((arg, index) => {
+            text = text.replace(new RegExp(`\\{${index}\\}`, 'g'), arg);
+        });
+        return text;
     }
 }
 
@@ -435,9 +543,15 @@ class ThemeManager {
             }
         }
         
-        // Redraw canvas if it exists
+        // Redraw all canvases if they exist
         if (window.App && window.App.previewCanvas) {
             window.App.previewCanvas.redraw();
+        }
+        
+        // Redraw easing preview canvas
+        if (window.App && window.App.mainApp && window.App.mainApp.easingPreviewCanvas) {
+            const easingType = document.getElementById('easingType')?.value || 'linear';
+            window.App.mainApp.easingPreviewCanvas.draw(easingType);
         }
     }
 }
