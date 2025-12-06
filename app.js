@@ -1312,7 +1312,8 @@ class BoxPreviewCanvas {
         if (!hitInfo && AppState.activeBoxIndex !== null) {
             console.log(AppState.activeBoxIndex)
             AppState.activeBoxIndex = null;
-            toast.info('Box 解锁', '现在可以与任意 Box 交互');
+            const i18n = window.i18nManager;
+            toast.info(i18n.t('toast.boxUnlocked'), i18n.t('toast.boxUnlockedMsg'));
             this.redraw();
         }
     }
@@ -1326,14 +1327,15 @@ class BoxPreviewCanvas {
         
         if (hitInfo) {
             // Toggle active box
+            const i18n = window.i18nManager;
             if (AppState.activeBoxIndex === hitInfo.boxIndex) {
                 // Double-clicking on already active box - deactivate
                 AppState.activeBoxIndex = null;
-                toast.info('Box 解锁', '现在可以与任意 Box 交互');
+                toast.info(i18n.t('toast.boxUnlocked'), i18n.t('toast.boxUnlockedMsg'));
             } else {
                 // Activate this box
                 AppState.activeBoxIndex = hitInfo.boxIndex;
-                toast.info('Box 锁定', `已锁定到 Box ${hitInfo.boxIndex}，双击或点击空白解锁`);
+                toast.info(i18n.t('toast.boxLocked'), i18n.tf('toast.boxLockedMsg', hitInfo.boxIndex));
             }
             this.redraw();
         }
@@ -1682,29 +1684,68 @@ class BoxPreviewCanvas {
         return { x: canvasX, y: canvasY };
     }
     
+    // Get colors based on current theme
+    getThemeColors() {
+        const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+        return isDark ? {
+            // Dark theme - Pure Black
+            canvasBg: '#0a0a0a',
+            extendedBg: '#171717',
+            screenBg: '#1f1f1f',
+            gridLineOutside: '#27272a',
+            gridLineInside: '#3f3f46',
+            labelOutside: '#52525b',
+            labelInside: '#a1a1aa',
+            screenBorder: '#FF4757',
+            centerCross: '#52525b',
+            centerDot: '#FF4757',
+            boxLabelBg: 'rgba(23, 23, 23, 0.95)',
+            boxLabelText: '#fafafa',
+            boxLabelTextDisabled: '#a1a1aa',
+            boxLabelTextSecondary: '#a1a1aa'
+        } : {
+            // Light theme
+            canvasBg: '#F8F9FA',
+            extendedBg: '#F0F1F3',
+            screenBg: '#FFFFFF',
+            gridLineOutside: '#E0E2E6',
+            gridLineInside: '#E5E7EB',
+            labelOutside: '#B0B5BC',
+            labelInside: '#6B7280',
+            screenBorder: '#FF4757',
+            centerCross: '#9CA3AF',
+            centerDot: '#FF4757',
+            boxLabelBg: 'rgba(255, 255, 255, 0.9)',
+            boxLabelText: '#1F2937',
+            boxLabelTextDisabled: '#6B7280',
+            boxLabelTextSecondary: '#6B7280'
+        };
+    }
+    
     drawGrid() {
         const ctx = this.ctx;
+        const colors = this.getThemeColors();
         
-        // Clear canvas with modern white/light gray background
-        ctx.fillStyle = '#F8F9FA';
+        // Clear canvas with theme-appropriate background
+        ctx.fillStyle = colors.canvasBg;
         ctx.fillRect(0, 0, this.width, this.height);
         
         // Draw outer boundary area (extended area)
         const extTopLeft = this.coordToCanvas(BoxPreviewCanvas.DISPLAY_X_MIN, BoxPreviewCanvas.DISPLAY_Y_MAX);
         const extBottomRight = this.coordToCanvas(BoxPreviewCanvas.DISPLAY_X_MAX, BoxPreviewCanvas.DISPLAY_Y_MIN);
         
-        ctx.fillStyle = '#F0F1F3';
+        ctx.fillStyle = colors.extendedBg;
         ctx.fillRect(extTopLeft.x, extTopLeft.y, extBottomRight.x - extTopLeft.x, extBottomRight.y - extTopLeft.y);
         
         // Draw visible screen area background
         const screenTopLeft = this.coordToCanvas(BoxPreviewCanvas.SCREEN_X_MIN, BoxPreviewCanvas.SCREEN_Y_MAX);
         const screenBottomRight = this.coordToCanvas(BoxPreviewCanvas.SCREEN_X_MAX, BoxPreviewCanvas.SCREEN_Y_MIN);
         
-        ctx.fillStyle = '#FFFFFF';
+        ctx.fillStyle = colors.screenBg;
         ctx.fillRect(screenTopLeft.x, screenTopLeft.y, screenBottomRight.x - screenTopLeft.x, screenBottomRight.y - screenTopLeft.y);
         
         // Draw grid lines
-        ctx.strokeStyle = '#E5E7EB';
+        ctx.strokeStyle = colors.gridLineInside;
         ctx.lineWidth = 1;
         ctx.setLineDash([]);
         
@@ -1716,14 +1757,14 @@ class BoxPreviewCanvas {
             const pos = this.coordToCanvas(x, 0);
             const isOutside = x < -16 || x > 16;
             
-            ctx.strokeStyle = isOutside ? '#E0E2E6' : '#E5E7EB';
+            ctx.strokeStyle = isOutside ? colors.gridLineOutside : colors.gridLineInside;
             ctx.beginPath();
             ctx.moveTo(pos.x, this.offsetY);
             ctx.lineTo(pos.x, this.offsetY + this.drawHeight);
             ctx.stroke();
             
             // X axis labels
-            ctx.fillStyle = isOutside ? '#B0B5BC' : '#6B7280';
+            ctx.fillStyle = isOutside ? colors.labelOutside : colors.labelInside;
             ctx.font = '10px Inter, sans-serif';
             ctx.textAlign = 'center';
             ctx.fillText(x.toString(), pos.x, this.offsetY + this.drawHeight + 16);
@@ -1734,28 +1775,28 @@ class BoxPreviewCanvas {
             const pos = this.coordToCanvas(0, y);
             const isOutside = y < -9 || y > 9;
             
-            ctx.strokeStyle = isOutside ? '#E0E2E6' : '#E5E7EB';
+            ctx.strokeStyle = isOutside ? colors.gridLineOutside : colors.gridLineInside;
             ctx.beginPath();
             ctx.moveTo(this.offsetX, pos.y);
             ctx.lineTo(this.offsetX + this.drawWidth, pos.y);
             ctx.stroke();
             
             // Y axis labels
-            ctx.fillStyle = isOutside ? '#B0B5BC' : '#6B7280';
+            ctx.fillStyle = isOutside ? colors.labelOutside : colors.labelInside;
             ctx.font = '10px Inter, sans-serif';
             ctx.textAlign = 'right';
             ctx.fillText(y.toString(), this.offsetX - 8, pos.y + 4);
         }
         
         // Draw visible screen boundary (16:9 area)
-        ctx.strokeStyle = '#FF4757';
+        ctx.strokeStyle = colors.screenBorder;
         ctx.lineWidth = 2;
         ctx.strokeRect(screenTopLeft.x, screenTopLeft.y, 
             screenBottomRight.x - screenTopLeft.x, screenBottomRight.y - screenTopLeft.y);
         
         // Draw center cross
         const center = this.coordToCanvas(0, 0);
-        ctx.strokeStyle = '#9CA3AF';
+        ctx.strokeStyle = colors.centerCross;
         ctx.lineWidth = 1;
         ctx.beginPath();
         ctx.moveTo(center.x - 12, center.y);
@@ -1765,7 +1806,7 @@ class BoxPreviewCanvas {
         ctx.stroke();
         
         // Draw center point
-        ctx.fillStyle = '#FF4757';
+        ctx.fillStyle = colors.centerDot;
         ctx.beginPath();
         ctx.arc(center.x, center.y, 3, 0, 2 * Math.PI);
         ctx.fill();
@@ -1779,6 +1820,7 @@ class BoxPreviewCanvas {
         
         const ctx = this.ctx;
         const color = BoxPreviewCanvas.BOX_COLORS[box.boxIndex];
+        const colors = this.getThemeColors();
         
         // Check if this box is being hovered or dragged
         const isHovered = this.hoverInfo && this.hoverInfo.boxIndex === box.boxIndex;
@@ -1901,18 +1943,18 @@ class BoxPreviewCanvas {
             }
         }
         
-        // Draw label (more transparent for disabled)
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+        // Draw label (using theme colors)
+        ctx.fillStyle = colors.boxLabelBg;
         ctx.beginPath();
         ctx.roundRect(lx - LW / 2, ly - LH / 2, LW, LH, 4);
         ctx.fill();
         
-        ctx.fillStyle = isDisabled ? '#6B7280' : '#1F2937';
+        ctx.fillStyle = isDisabled ? colors.boxLabelTextDisabled : colors.boxLabelText;
         ctx.font = 'bold 11px Inter, sans-serif';
         ctx.textAlign = 'center';
         ctx.fillText(`Box ${box.boxIndex}${isDisabled ? ' (Off)' : ''}`, lx, ly - 3);
         
-        ctx.fillStyle = '#6B7280';
+        ctx.fillStyle = colors.boxLabelTextSecondary;
         ctx.font = '10px Inter, sans-serif';
         ctx.fillText(`S:${box.size.toFixed(2)}`, lx, ly + 10);
     }
@@ -1920,10 +1962,12 @@ class BoxPreviewCanvas {
     // Draw interaction handles (corners for resize, edges highlighted for mask)
     drawInteractionHandles(box, rectX, rectY, rectW, rectH, color, isActiveBox = false) {
         const ctx = this.ctx;
+        const colors = this.getThemeColors();
         const CORNER_SIZE = 8;
         const EDGE_HANDLE_WIDTH = 24;  // Width of edge handle rectangle
         const EDGE_HANDLE_HEIGHT = 6;  // Height of edge handle rectangle
         const activeType = this.isDragging ? this.dragType : (this.hoverInfo ? this.hoverInfo.type : null);
+        const handleFillInactive = colors.screenBg; // Use screen background for inactive handles
         
         // Draw corner handles (for resize)
         const corners = [
@@ -1935,8 +1979,8 @@ class BoxPreviewCanvas {
         
         corners.forEach(corner => {
             const isActive = activeType === corner.type;
-            // For active box, always fill with color; otherwise white when not active
-            ctx.fillStyle = (isActive || isActiveBox) ? color : '#FFFFFF';
+            // For active box, always fill with color; otherwise use theme-appropriate fill
+            ctx.fillStyle = (isActive || isActiveBox) ? color : handleFillInactive;
             ctx.strokeStyle = color;
             ctx.lineWidth = 2;
             ctx.beginPath();
@@ -1979,8 +2023,8 @@ class BoxPreviewCanvas {
         
         edgeHandles.forEach(handle => {
             const isActive = activeType === handle.type;
-            // For active box, always fill with color; otherwise white when not active
-            ctx.fillStyle = (isActive || isActiveBox) ? color : '#FFFFFF';
+            // For active box, always fill with color; otherwise use theme-appropriate fill
+            ctx.fillStyle = (isActive || isActiveBox) ? color : handleFillInactive;
             ctx.strokeStyle = color;
             ctx.lineWidth = 2;
             ctx.beginPath();
@@ -2121,6 +2165,35 @@ class EasingPreviewCanvas {
         this.padding = 10;
     }
     
+    // Get theme-aware colors
+    getThemeColors() {
+        const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+        
+        if (isDark) {
+            return {
+                background: '#161616',
+                validArea: 'rgba(255, 71, 87, 0.1)',
+                grid: '#2a2a2a',
+                axis: '#3a3a3a',
+                reference: '#525252',
+                curve: '#FF4757',
+                point: '#FF4757',
+                text: '#a1a1aa'
+            };
+        } else {
+            return {
+                background: '#FFFFFF',
+                validArea: '#FFF5F5',
+                grid: '#F3F4F6',
+                axis: '#E5E7EB',
+                reference: '#D1D5DB',
+                curve: '#FF4757',
+                point: '#FF4757',
+                text: '#9CA3AF'
+            };
+        }
+    }
+    
     valueToCanvas(t, value) {
         const drawWidth = this.width - 2 * this.padding;
         const drawHeight = this.height - 2 * this.padding;
@@ -2137,24 +2210,25 @@ class EasingPreviewCanvas {
     draw(easingType) {
         const ctx = this.ctx;
         const easingFunc = EasingFunctions[easingType] || EasingFunctions.linear;
+        const colors = this.getThemeColors();
         
         const drawWidth = this.width - 2 * this.padding;
         const drawHeight = this.height - 2 * this.padding;
         
-        // Clear with white background
-        ctx.fillStyle = '#FFFFFF';
+        // Clear with theme background
+        ctx.fillStyle = colors.background;
         ctx.fillRect(0, 0, this.width, this.height);
         
         // Draw valid range area (0-1 x 0-1)
         const validTopLeft = this.valueToCanvas(0, 1);
         const validBottomRight = this.valueToCanvas(1, 0);
         
-        ctx.fillStyle = '#FFF5F5';
+        ctx.fillStyle = colors.validArea;
         ctx.fillRect(validTopLeft.x, validTopLeft.y, 
             validBottomRight.x - validTopLeft.x, validBottomRight.y - validTopLeft.y);
         
         // Draw grid
-        ctx.strokeStyle = '#F3F4F6';
+        ctx.strokeStyle = colors.grid;
         ctx.lineWidth = 1;
         
         // Vertical lines at 0, 0.5, 1
@@ -2176,11 +2250,11 @@ class EasingPreviewCanvas {
         });
         
         // Draw axis at 0 and 1 boundaries
-        ctx.strokeStyle = '#E5E7EB';
+        ctx.strokeStyle = colors.axis;
         ctx.lineWidth = 1;
         
         // Draw the diagonal reference line (linear)
-        ctx.strokeStyle = '#D1D5DB';
+        ctx.strokeStyle = colors.reference;
         ctx.lineWidth = 1;
         ctx.setLineDash([4, 4]);
         ctx.beginPath();
@@ -2192,7 +2266,7 @@ class EasingPreviewCanvas {
         ctx.setLineDash([]);
         
         // Draw easing curve - extended range for elastic/bounce effects
-        ctx.strokeStyle = '#FF4757';
+        ctx.strokeStyle = colors.curve;
         ctx.lineWidth = 2.5;
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
@@ -2222,7 +2296,7 @@ class EasingPreviewCanvas {
         const startPos = this.valueToCanvas(0, easingFunc(0));
         const endPos = this.valueToCanvas(1, easingFunc(1));
         
-        ctx.fillStyle = '#FF4757';
+        ctx.fillStyle = colors.point;
         ctx.beginPath();
         ctx.arc(startPos.x, startPos.y, 3, 0, 2 * Math.PI);
         ctx.fill();
@@ -2232,7 +2306,7 @@ class EasingPreviewCanvas {
         ctx.fill();
         
         // Draw boundary markers
-        ctx.fillStyle = '#9CA3AF';
+        ctx.fillStyle = colors.text;
         ctx.font = '8px Inter, sans-serif';
         ctx.textAlign = 'center';
         
@@ -2568,7 +2642,8 @@ class BoxControlPanel {
         // Update button states
         this.updateCopyPasteButtons();
         
-        showToast('success', '已复制', `${this.getParamDisplayName(param)}: ${this.formatValue(param, this.clipboard.value)}`);
+        const i18n = window.i18nManager;
+        showToast('success', i18n.t('toast.copied'), `${this.getParamDisplayName(param)}: ${this.formatValue(param, this.clipboard.value)}`);
     }
     
     // Paste parameter to target
@@ -2584,7 +2659,8 @@ class BoxControlPanel {
         // Update via App.update
         App.update('panel', { boxIndex });
         
-        showToast('success', '已粘贴', `${this.getParamDisplayName(param)} → Box ${boxIndex}`);
+        const i18n = window.i18nManager;
+        showToast('success', i18n.t('toast.pasted'), `${this.getParamDisplayName(param)} → Box ${boxIndex}`);
         
         // Auto clear clipboard after paste
         this.clearClipboardSilent();
@@ -2634,7 +2710,8 @@ class BoxControlPanel {
         // Update button states
         this.updateCopyPasteButtons();
         
-        showToast('success', '已复制', `Box ${boxIndex} 全部参数`);
+        const i18n = window.i18nManager;
+        showToast('success', i18n.t('toast.copied'), i18n.tf('toast.copiedBox', boxIndex));
     }
     
     // Paste box to target
@@ -2648,7 +2725,8 @@ class BoxControlPanel {
         // Update via App.update
         App.update('panel', { boxIndex });
         
-        showToast('success', '已粘贴', `全部参数 → Box ${boxIndex}`);
+        const i18n = window.i18nManager;
+        showToast('success', i18n.t('toast.pasted'), i18n.tf('toast.pastedBox', boxIndex));
         
         // Auto clear clipboard after paste
         this.clearClipboardSilent();
@@ -2665,7 +2743,8 @@ class BoxControlPanel {
             sourceBoxIndex: null
         };
         this.updateCopyPasteButtons();
-        showToast('info', '已取消', '复制已取消');
+        const i18n = window.i18nManager;
+        showToast('info', i18n.t('toast.cancelled'), i18n.t('toast.cancelledSuccess'));
     }
     
     // Update all copy/paste button states based on clipboard
@@ -2677,11 +2756,13 @@ class BoxControlPanel {
         const pasteBoxIcon = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/></svg>';
         const cancelBoxIcon = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
         
+        const i18n = window.i18nManager;
+        
         // Reset all param buttons
         document.querySelectorAll('.copy-param-btn').forEach(btn => {
             btn.classList.remove('copied', 'paste-mode');
             btn.innerHTML = copyIcon;
-            btn.title = '复制';
+            btn.title = i18n.t('boxControl.copyParam');
             
             // If clipboard has same param type
             if (this.clipboard.type === 'param' && btn.dataset.param === this.clipboard.param) {
@@ -2690,12 +2771,12 @@ class BoxControlPanel {
                     parseInt(btn.dataset.box) === this.clipboard.sourceBoxIndex) {
                     btn.classList.add('copied');
                     btn.innerHTML = cancelIcon;
-                    btn.title = '取消复制';
+                    btn.title = i18n.t('boxControl.cancelCopy');
                 } else {
                     // Otherwise show paste mode
                     btn.classList.add('paste-mode');
                     btn.innerHTML = pasteIcon;
-                    btn.title = '粘贴';
+                    btn.title = i18n.t('boxControl.paste');
                 }
             }
         });
@@ -2704,7 +2785,7 @@ class BoxControlPanel {
         document.querySelectorAll('.copy-box-btn').forEach(btn => {
             btn.classList.remove('copied', 'paste-mode');
             btn.innerHTML = copyBoxIcon;
-            btn.title = '复制整个 Box';
+            btn.title = i18n.t('boxControl.copyBox');
             
             // If clipboard has box data
             if (this.clipboard.type === 'box') {
@@ -2713,12 +2794,12 @@ class BoxControlPanel {
                     parseInt(btn.dataset.box) === this.clipboard.sourceBoxIndex) {
                     btn.classList.add('copied');
                     btn.innerHTML = cancelBoxIcon;
-                    btn.title = '取消复制';
+                    btn.title = i18n.t('boxControl.cancelCopy');
                 } else {
                     // Otherwise show paste mode
                     btn.classList.add('paste-mode');
                     btn.innerHTML = pasteBoxIcon;
-                    btn.title = '粘贴';
+                    btn.title = i18n.t('boxControl.paste');
                 }
             }
         });
@@ -2772,7 +2853,8 @@ class BoxControlPanel {
         
         App.resetBox(boxIndex);
         
-        toast.info('已重置', `Box ${boxIndex} 已恢复默认值`);
+        const i18n = window.i18nManager;
+        toast.info(i18n.t('toast.reset'), i18n.tf('toast.resetSuccess', boxIndex) || `Box ${boxIndex} ${i18n.t('toast.resetSuccess')}`);
     }
 }
 
@@ -2966,12 +3048,13 @@ class SuperSourceTransitionApp {
         }
         
         // Show feedback toast
+        const i18n = window.i18nManager;
         const precisionNames = {
-            'precise': '精确 (无限制)',
-            'medium': '中等 (位置 1/6, 大小 1/18)',
-            'coarse': '粗略 (位置 1/3, 大小 1/9)'
+            'precise': i18n.t('toast.precisionPrecise'),
+            'medium': i18n.t('toast.precisionMedium'),
+            'coarse': i18n.t('toast.precisionCoarse')
         };
-        toast.info('拖动精度', precisionNames[precision]);
+        toast.info(i18n.t('toast.dragPrecisionChanged'), precisionNames[precision]);
     }
     
     // ============== View Mode Management ==============
@@ -3114,9 +3197,10 @@ class SuperSourceTransitionApp {
     
     previewInitial(silent = false) {
         const xml = this.initialXmlEl.value.trim();
+        const i18n = window.i18nManager;
         if (!xml) {
             App.clearStates('initial');
-            if (!silent) toast.info('提示', '初始位置为空');
+            if (!silent) toast.info(i18n.t('toast.info'), i18n.t('toast.initialEmpty'));
             return;
         }
         
@@ -3127,17 +3211,18 @@ class SuperSourceTransitionApp {
             App.loadStates('initial', states);
             
             const enabledCount = Object.values(states).filter(b => b.enable).length;
-            if (!silent) toast.success('预览成功', `Initial: ${enabledCount} 个启用的 Box`);
+            if (!silent) toast.success(i18n.t('toast.previewSuccess'), i18n.tf('toast.initialPreview', enabledCount));
         } catch (e) {
-            if (!silent) toast.error('解析错误', `解析初始位置 XML 失败: ${e.message}`);
+            if (!silent) toast.error(i18n.t('toast.parseError'), i18n.tf('toast.parseInitialError', e.message));
         }
     }
     
     previewFinal(silent = false) {
         const xml = this.finalXmlEl.value.trim();
+        const i18n = window.i18nManager;
         if (!xml) {
             App.clearStates('final');
-            if (!silent) toast.info('提示', '最终位置为空');
+            if (!silent) toast.info(i18n.t('toast.info'), i18n.t('toast.finalEmpty'));
             return;
         }
         
@@ -3148,9 +3233,9 @@ class SuperSourceTransitionApp {
             App.loadStates('final', states);
             
             const enabledCount = Object.values(states).filter(b => b.enable).length;
-            if (!silent) toast.success('预览成功', `Final: ${enabledCount} 个启用的 Box`);
+            if (!silent) toast.success(i18n.t('toast.previewSuccess'), i18n.tf('toast.finalPreview', enabledCount));
         } catch (e) {
-            if (!silent) toast.error('解析错误', `解析最终位置 XML 失败: ${e.message}`);
+            if (!silent) toast.error(i18n.t('toast.parseError'), i18n.tf('toast.parseFinalError', e.message));
         }
     }
     
@@ -3158,14 +3243,16 @@ class SuperSourceTransitionApp {
         this.initialXmlEl.value = '';
         App.clearStates('initial');
         this.hidePreviewControls();
-        toast.info('已清空', '初始位置已清空');
+        const i18n = window.i18nManager;
+        toast.info(i18n.t('toast.cleared'), i18n.t('toast.initialCleared'));
     }
     
     clearFinal() {
         this.finalXmlEl.value = '';
         App.clearStates('final');
         this.hidePreviewControls();
-        toast.info('已清空', '最终位置已清空');
+        const i18n = window.i18nManager;
+        toast.info(i18n.t('toast.cleared'), i18n.t('toast.finalCleared'));
     }
     
     formatXml(type) {
@@ -3197,9 +3284,11 @@ class SuperSourceTransitionApp {
                 this.previewFinal(true);
             }
             
-            toast.success('格式化完成', 'XML 已格式化并补全所有参数');
+            const i18n = window.i18nManager;
+            toast.success(i18n.t('toast.formatted'), i18n.t('toast.formattedSuccess'));
         } catch (e) {
-            toast.error('格式化失败', 'XML 格式无效');
+            const i18n = window.i18nManager;
+            toast.error(i18n.t('toast.error'), i18n.t('toast.formatErrorMsg'));
         }
     }
     
@@ -3218,7 +3307,8 @@ class SuperSourceTransitionApp {
         // Swap via App (handles state swap and UI update)
         App.swapStates();
         
-        toast.success('交换完成', 'Initial ↔ Final 已交换');
+        const i18n = window.i18nManager;
+        toast.success(i18n.t('toast.swapped'), i18n.t('toast.swappedSuccess'));
     }
     
     // ============== Animation Generation ==============
@@ -3226,15 +3316,16 @@ class SuperSourceTransitionApp {
     generate(silent = false) {
         const initialXml = this.initialXmlEl.value.trim();
         const finalXml = this.finalXmlEl.value.trim();
+        const i18n = window.i18nManager;
         
         if (!initialXml || !finalXml) {
-            if (!silent) toast.warning('缺少输入', '请输入初始位置和最终位置的 XML');
+            if (!silent) toast.warning(i18n.t('toast.missingInput'), i18n.t('toast.missingXml'));
             return false;
         }
         
         const frames = parseInt(this.framesInputEl.value);
         if (isNaN(frames) || frames <= 0) {
-            if (!silent) toast.warning('参数错误', '帧数必须大于 0');
+            if (!silent) toast.warning(i18n.t('toast.invalidParameter'), i18n.t('toast.invalidFrames'));
             return false;
         }
         
@@ -3259,7 +3350,7 @@ class SuperSourceTransitionApp {
                 }
             }
             
-            this.outputInfoEl.textContent = `帧数: ${frames} | 缓动: ${easingType} | 活动Box: [${animatingBoxes.join(', ')}]`;
+            this.outputInfoEl.textContent = i18n.tf('toast.outputInfo', frames, easingType, animatingBoxes.join(', '));
             
             // Setup preview animation (don't change current mode)
             this.totalFrames = frames;
@@ -3271,10 +3362,10 @@ class SuperSourceTransitionApp {
             }
             this.updateSliderPosition();
             
-            if (!silent) toast.success('生成成功', `已生成 ${frames} 帧过渡动画`);
+            if (!silent) toast.success(i18n.t('toast.generated'), i18n.tf('toast.generatedFrames', frames));
             return true;
         } catch (e) {
-            if (!silent) toast.error('生成失败', e.message);
+            if (!silent) toast.error(i18n.t('toast.generateError'), e.message);
             return false;
         }
     }
@@ -3425,23 +3516,26 @@ class SuperSourceTransitionApp {
     // Copy XML content from input panels
     copyXmlContent(type) {
         const content = type === 'initial' ? this.initialXmlEl.value : this.finalXmlEl.value;
+        const i18n = window.i18nManager;
         if (!content.trim()) {
-            toast.warning('无内容', '没有内容可复制');
+            toast.warning(i18n.t('toast.noContent'), i18n.t('toast.noContentWarning'));
             return;
         }
         
         navigator.clipboard.writeText(content).then(() => {
-            toast.success('复制成功', `${type === 'initial' ? '初始位置' : '最终位置'} XML 已复制到剪贴板`);
+            const msg = type === 'initial' ? i18n.t('toast.initialXmlCopied') : i18n.t('toast.finalXmlCopied');
+            toast.success(i18n.t('toast.copied'), msg);
         }).catch(err => {
-            toast.error('复制失败', err.message);
+            toast.error(i18n.t('toast.copyFailed'), err.message);
         });
     }
     
     // Save XML content to file with file picker
     async saveXmlFile(type) {
         const content = type === 'initial' ? this.initialXmlEl.value : this.finalXmlEl.value;
+        const i18n = window.i18nManager;
         if (!content.trim()) {
-            toast.warning('无内容', '没有内容可保存');
+            toast.warning(i18n.t('toast.noContent'), i18n.t('toast.noContentToSave'));
             return;
         }
         
@@ -3460,7 +3554,7 @@ class SuperSourceTransitionApp {
                 const writable = await handle.createWritable();
                 await writable.write(content);
                 await writable.close();
-                toast.success('保存成功', '文件已保存');
+                toast.success(i18n.t('toast.saved'), i18n.t('toast.savedSuccess'));
                 return;
             } catch (err) {
                 if (err.name === 'AbortError') {
@@ -3481,28 +3575,30 @@ class SuperSourceTransitionApp {
         a.click();
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
-        toast.success('保存成功', '文件已下载');
+        toast.success(i18n.t('toast.saved'), i18n.t('toast.fileDownloaded'));
     }
     
     copyToClipboard() {
         const content = this.outputXmlEl.querySelector('code').textContent;
-        if (!content || content.includes('生成的 XML 将在这里显示')) {
-            toast.warning('无内容', '没有内容可复制');
+        const i18n = window.i18nManager;
+        if (!content || content.includes('Generated XML') || content.includes('生成的 XML')) {
+            toast.warning(i18n.t('toast.noContent'), i18n.t('toast.noContentWarning'));
             return;
         }
         
         navigator.clipboard.writeText(content).then(() => {
-            toast.success('复制成功', '已复制到剪贴板');
+            toast.success(i18n.t('toast.copied'), i18n.t('toast.copiedSuccess'));
         }).catch(err => {
-            toast.error('复制失败', err.message);
+            toast.error(i18n.t('toast.copyFailed'), err.message);
         });
     }
     
     // Save output XML to file with file picker
     async saveOutputFile() {
         const content = this.outputXmlEl.querySelector('code').textContent;
-        if (!content || content.includes('生成的 XML 将在这里显示')) {
-            toast.warning('无内容', '没有内容可保存');
+        const i18n = window.i18nManager;
+        if (!content || content.includes('Generated XML') || content.includes('生成的 XML')) {
+            toast.warning(i18n.t('toast.noContent'), i18n.t('toast.noContentToSave'));
             return;
         }
         
@@ -3519,7 +3615,7 @@ class SuperSourceTransitionApp {
                 const writable = await handle.createWritable();
                 await writable.write(content);
                 await writable.close();
-                toast.success('保存成功', '文件已保存');
+                toast.success(i18n.t('toast.saved'), i18n.t('toast.savedSuccess'));
                 return;
             } catch (err) {
                 if (err.name === 'AbortError') {
@@ -3540,7 +3636,7 @@ class SuperSourceTransitionApp {
         a.click();
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
-        toast.success('保存成功', '文件已下载');
+        toast.success(i18n.t('toast.saved'), i18n.t('toast.fileDownloaded'));
     }
     
     loadSample() {
@@ -3585,11 +3681,13 @@ class SuperSourceTransitionApp {
         this.previewFinal(true);
         this.tryAutoGenerate();
         
-        toast.success('加载成功', '示例数据已加载');
+        const i18n = window.i18nManager;
+        toast.success(i18n.t('toast.loaded'), i18n.t('toast.loadedSuccess'));
     }
 }
 
 // ============== Initialize Application ==============
+window.App = App; // Expose App globally
 
 document.addEventListener('DOMContentLoaded', () => {
     new SuperSourceTransitionApp();
