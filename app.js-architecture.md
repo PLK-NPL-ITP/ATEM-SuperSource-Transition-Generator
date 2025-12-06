@@ -27,9 +27,9 @@ This document provides a comprehensive explanation of the `app.js` architecture,
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    SuperSourceTransitionApp                  │
-│                    (应用程序协调器/App Coordinator)            │
-│  - 初始化所有组件 / Initialize all components                 │
+│                    SuperSourceTransitionApp                 │
+│                    (应用程序协调器/App Coordinator)          │
+│  - 初始化所有组件 / Initialize all components                │
 │  - 协调高层级操作 / Coordinate high-level operations         │
 │  - 管理动画播放 / Manage animation playback                  │
 └──────────────────┬──────────────────────────────────────────┘
@@ -40,7 +40,7 @@ This document provides a comprehensive explanation of the `app.js` architecture,
    ┌────────┐ ┌──────┐ ┌──────────┐ ┌──────────┐ ┌────────┐
    │AppState│ │ App  │ │BoxPreview│ │BoxControl│ │其他工具类│
    │        │ │      │ │Canvas    │ │Panel     │ │XMLParser│
-   │数据存储 │ │控制器 │ │画布渲染   │ │UI面板    │ │等       │
+   │数据存储│ │控制器 │ │画布渲染   │ │UI面板    │ │等       │
    └────────┘ └──────┘ └──────────┘ └──────────┘ └────────┘
 ```
 
@@ -995,39 +995,3 @@ class BoxPreviewCanvas {
 - [ ] 是否保持了职责分离？
 - [ ] 是否添加了必要的注释？
 - [ ] 是否遵循了命名规范？
-
-### 常见问题 (FAQ)
-
-**Q: 为什么要使用 App.update() 而不是直接调用组件方法？**
-
-A: App.update() 确保所有相关组件同步更新，避免状态不一致。直接调用组件方法可能导致某些视图没有更新。
-
-**Q: 什么时候使用 skip 选项？**
-
-A: 当你知道某个组件不需要更新时。例如：
-- 从 XML 加载数据时 skipXml（避免重新生成刚加载的 XML）
-- 实时拖动时 skipAutoGenerate（避免每帧都生成过渡）
-- 输入框输入时 skipPanel（避免打断用户输入）
-
-**Q: 如何添加新功能？**
-
-A: 遵循以下步骤：
-1. 确定功能属于哪个层次（数据/控制/视图）
-2. 在对应的类中实现
-3. 通过 App 连接各个部分
-4. 确保使用 App.update() 同步状态
-
-**Q: 动画状态为什么不在 AppState 中？**
-
-A: 动画状态（currentFrame, isPlaying 等）是播放控制状态，不是 Box 数据状态。它们属于 SuperSourceTransitionApp 的职责范围。
-
----
-
-## 版本历史 (Version History)
-
-- **2024-12-06** - 初始版本，完整的架构文档
-- **作者:** Jason Yang Jiepeng, NPL ITP Infrastructure (Development) Group
-
----
-
-*本文档持续更新中，欢迎反馈改进建议。*
