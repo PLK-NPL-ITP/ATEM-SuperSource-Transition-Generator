@@ -306,7 +306,7 @@ class I18nManager {
         // Update language label in toggle button
         const languageLabel = document.querySelector('.language-label');
         if (languageLabel) {
-            languageLabel.textContent = lang === 'en' ? 'EN' : '中文';
+            languageLabel.textContent = lang === 'en' ? 'EN' : 'ZH';
         }
         
         // Show toast notification
