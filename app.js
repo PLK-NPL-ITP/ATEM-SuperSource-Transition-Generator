@@ -2974,35 +2974,47 @@ class SuperSourceTransitionApp {
         this.bindBoxPanelHeaderClickHandlers();
     }
     
+    // Show handles for a specific box (called by UI interactions)
+    showHandlesForBox(boxIndex) {
+        if (AppState.viewMode === 'transforming') return;
+        AppState.handlesVisibleForBox = boxIndex;
+        this.previewCanvas.redraw();
+    }
+    
+    // Toggle box activation (called by UI double-click interactions)
+    toggleBoxActivation(boxIndex) {
+        if (AppState.viewMode === 'transforming') return;
+        if (AppState.activeBoxIndex === boxIndex) {
+            // Already active, deactivate
+            AppState.activeBoxIndex = null;
+            AppState.handlesVisibleForBox = null;
+            toast.info('Box 解锁', '现在可以与任意 Box 交互');
+        } else {
+            // Activate this box
+            AppState.activeBoxIndex = boxIndex;
+            AppState.handlesVisibleForBox = null; // Active box always shows handles
+            toast.info('Box 锁定', `已锁定到 Box ${boxIndex}，双击或点击空白解锁`);
+        }
+        this.previewCanvas.redraw();
+    }
+    
     // Bind click handlers to legend items
     bindLegendClickHandlers() {
         const legendItems = document.querySelectorAll('.legend-item');
         legendItems.forEach((item) => {
             const boxIndex = parseInt(item.dataset.box);
             
+            // Validate box index
+            if (isNaN(boxIndex) || boxIndex < 0 || boxIndex > 3) {
+                console.warn('Invalid box index in legend item:', item);
+                return;
+            }
+            
             // Single click: show handles
-            item.addEventListener('click', () => {
-                if (AppState.viewMode === 'transforming') return;
-                AppState.handlesVisibleForBox = boxIndex;
-                this.previewCanvas.redraw();
-            });
+            item.addEventListener('click', () => this.showHandlesForBox(boxIndex));
             
             // Double click: activate box
-            item.addEventListener('dblclick', () => {
-                if (AppState.viewMode === 'transforming') return;
-                if (AppState.activeBoxIndex === boxIndex) {
-                    // Already active, deactivate
-                    AppState.activeBoxIndex = null;
-                    AppState.handlesVisibleForBox = null;
-                    toast.info('Box 解锁', '现在可以与任意 Box 交互');
-                } else {
-                    // Activate this box
-                    AppState.activeBoxIndex = boxIndex;
-                    AppState.handlesVisibleForBox = null; // Active box always shows handles
-                    toast.info('Box 锁定', `已锁定到 Box ${boxIndex}，双击或点击空白解锁`);
-                }
-                this.previewCanvas.redraw();
-            });
+            item.addEventListener('dblclick', () => this.toggleBoxActivation(boxIndex));
             
             // Add hover cursor
             item.style.cursor = 'pointer';
@@ -3014,40 +3026,25 @@ class SuperSourceTransitionApp {
         const boxPanels = document.querySelectorAll('.box-control-panel');
         boxPanels.forEach((panel) => {
             const boxIndex = parseInt(panel.dataset.box);
+            
+            // Validate box index
+            if (isNaN(boxIndex) || boxIndex < 0 || boxIndex > 3) {
+                console.warn('Invalid box index in panel:', panel);
+                return;
+            }
+            
             const title = panel.querySelector('.box-title');
             const icon = panel.querySelector('.box-color-dot');
             
-            const handleSingleClick = () => {
-                if (AppState.viewMode === 'transforming') return;
-                AppState.handlesVisibleForBox = boxIndex;
-                this.previewCanvas.redraw();
-            };
-            
-            const handleDoubleClick = () => {
-                if (AppState.viewMode === 'transforming') return;
-                if (AppState.activeBoxIndex === boxIndex) {
-                    // Already active, deactivate
-                    AppState.activeBoxIndex = null;
-                    AppState.handlesVisibleForBox = null;
-                    toast.info('Box 解锁', '现在可以与任意 Box 交互');
-                } else {
-                    // Activate this box
-                    AppState.activeBoxIndex = boxIndex;
-                    AppState.handlesVisibleForBox = null; // Active box always shows handles
-                    toast.info('Box 锁定', `已锁定到 Box ${boxIndex}，双击或点击空白解锁`);
-                }
-                this.previewCanvas.redraw();
-            };
-            
             // Add event listeners to both title and icon
             if (title) {
-                title.addEventListener('click', handleSingleClick);
-                title.addEventListener('dblclick', handleDoubleClick);
+                title.addEventListener('click', () => this.showHandlesForBox(boxIndex));
+                title.addEventListener('dblclick', () => this.toggleBoxActivation(boxIndex));
                 title.style.cursor = 'pointer';
             }
             if (icon) {
-                icon.addEventListener('click', handleSingleClick);
-                icon.addEventListener('dblclick', handleDoubleClick);
+                icon.addEventListener('click', () => this.showHandlesForBox(boxIndex));
+                icon.addEventListener('dblclick', () => this.toggleBoxActivation(boxIndex));
                 icon.style.cursor = 'pointer';
             }
         });
