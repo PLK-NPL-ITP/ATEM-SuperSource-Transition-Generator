@@ -1318,13 +1318,17 @@ class BoxPreviewCanvas {
             this.redraw();
         } else {
             // Click outside any box: hide handles and deactivate active box
+            let needsRedraw = false;
             if (AppState.handlesVisibleForBox !== null) {
                 AppState.handlesVisibleForBox = null;
-                this.redraw();
+                needsRedraw = true;
             }
             if (AppState.activeBoxIndex !== null) {
                 AppState.activeBoxIndex = null;
                 toast.info('Box 解锁', '现在可以与任意 Box 交互');
+                needsRedraw = true;
+            }
+            if (needsRedraw) {
                 this.redraw();
             }
         }
@@ -2973,27 +2977,29 @@ class SuperSourceTransitionApp {
     // Bind click handlers to legend items
     bindLegendClickHandlers() {
         const legendItems = document.querySelectorAll('.legend-item');
-        legendItems.forEach((item, index) => {
+        legendItems.forEach((item) => {
+            const boxIndex = parseInt(item.dataset.box);
+            
             // Single click: show handles
             item.addEventListener('click', () => {
                 if (AppState.viewMode === 'transforming') return;
-                AppState.handlesVisibleForBox = index;
+                AppState.handlesVisibleForBox = boxIndex;
                 this.previewCanvas.redraw();
             });
             
             // Double click: activate box
             item.addEventListener('dblclick', () => {
                 if (AppState.viewMode === 'transforming') return;
-                if (AppState.activeBoxIndex === index) {
+                if (AppState.activeBoxIndex === boxIndex) {
                     // Already active, deactivate
                     AppState.activeBoxIndex = null;
                     AppState.handlesVisibleForBox = null;
                     toast.info('Box 解锁', '现在可以与任意 Box 交互');
                 } else {
                     // Activate this box
-                    AppState.activeBoxIndex = index;
+                    AppState.activeBoxIndex = boxIndex;
                     AppState.handlesVisibleForBox = null; // Active box always shows handles
-                    toast.info('Box 锁定', `已锁定到 Box ${index}，双击或点击空白解锁`);
+                    toast.info('Box 锁定', `已锁定到 Box ${boxIndex}，双击或点击空白解锁`);
                 }
                 this.previewCanvas.redraw();
             });
