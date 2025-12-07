@@ -178,6 +178,29 @@ class BoxState {
     }
 }
 
+// ============== Macro Data Class ==============
+
+class MacroData {
+    constructor(index) {
+        this.index = index;
+        this.name = '';
+        this.description = '';
+        this.outputXML = ''; // Complete transition XML (output preview)
+        this.isModified = false; // Has been modified since import/init
+        this.isValid = true; // Can be parsed correctly
+    }
+    
+    clone() {
+        const cloned = new MacroData(this.index);
+        cloned.name = this.name;
+        cloned.description = this.description;
+        cloned.outputXML = this.outputXML;
+        cloned.isModified = this.isModified;
+        cloned.isValid = this.isValid;
+        return cloned;
+    }
+}
+
 // ============== Global Application State ==============
 // Pure data storage - single source of truth for all box data
 
@@ -205,6 +228,15 @@ const AppState = {
     
     // Transforming states for animation preview
     transformingStates: null,
+    
+    // MacroPool - array of 100 macros (indices 0-99)
+    macroPool: Array.from({ length: 100 }, (_, i) => new MacroData(i)),
+    
+    // Current selected macro index in MacroPool
+    currentMacroIndex: null,
+    
+    // Original MacroPool snapshot (for detecting modifications)
+    originalMacroPool: null,
     
     // Get current editable states based on view mode
     getCurrentStates() {
@@ -465,69 +497,354 @@ const App = {
 // ============== XML Parser ==============
 
 class XMLParser {
-    static parseOps(xmlText) {
+    // Known Op IDs that we support
+    static KNOWN_OP_IDS = new Set([
+        'SuperSourceV2BoxEnable',
+        'SuperSourceV2BoxSize',
+        'SuperSourceV2BoxXPosition',
+        'SuperSourceV2BoxYPosition',
+        'SuperSourceV2BoxMaskEnable',
+        'SuperSourceV2BoxCropEnable',
+        'SuperSourceV2BoxMaskLeft',
+        'SuperSourceV2BoxCropLeft',
+        'SuperSourceV2BoxMaskTop',
+        'SuperSourceV2BoxCropTop',
+        'SuperSourceV2BoxMaskRight',
+        'SuperSourceV2BoxCropRight',
+        'SuperSourceV2BoxMaskBottom',
+        'SuperSourceV2BoxCropBottom',
+        'MacroSleep'
+    ]);
+    
+    /**
+     * Validate and parse XML with strict error checking
+     * @param {string} xmlText - The XML text to parse
+     * @param {boolean} strict - If true, throws on any invalid line
+     * @returns {object} - Parsed box states
+     * @throws {Error} - If strict mode and invalid lines found
+     */
+    static parseOps(xmlText, strict = false) {
         const boxes = {};
-        const opPattern = /<Op\s+([^>]+)\/>/g;
-        const attrPattern = /(\w+)="([^"]*)"/g;
+        const lines = xmlText.split('\n');
+        const errors = [];
         
-        let match;
-        while ((match = opPattern.exec(xmlText)) !== null) {
-            const attrsStr = match[1];
-            const attrs = {};
-            let attrMatch;
+        for (let lineNum = 0; lineNum < lines.length; lineNum++) {
+            const line = lines[lineNum].trim();
             
-            while ((attrMatch = attrPattern.exec(attrsStr)) !== null) {
-                attrs[attrMatch[1]] = attrMatch[2];
-            }
-            attrPattern.lastIndex = 0; // Reset regex
+            // Skip empty lines
+            if (!line) continue;
             
-            const opId = attrs.id || '';
-            const boxIndex = parseInt(attrs.boxIndex || '0');
-            const superSource = parseInt(attrs.superSource || '0');
+            // Skip comments
+            if (line.startsWith('<!--') || line.startsWith('<!') || line.includes('-->')) continue;
             
-            if (!(boxIndex in boxes)) {
-                boxes[boxIndex] = new BoxState(boxIndex, superSource);
-            }
+            // Skip Macro tag lines
+            if (line.startsWith('<Macro') || line.startsWith('</Macro>')) continue;
             
-            const box = boxes[boxIndex];
+            // Skip XML declaration and Profile tags
+            if (line.startsWith('<?xml') || line.startsWith('<Profile') || line.startsWith('</Profile>') ||
+                line.startsWith('<MacroPool') || line.startsWith('</MacroPool>') || line.startsWith('<MacroControl')) continue;
             
-            switch (opId) {
-                case 'SuperSourceV2BoxEnable':
-                    box.enable = (attrs.enable || 'False').toLowerCase() === 'true';
-                    break;
-                case 'SuperSourceV2BoxSize':
-                    box.size = parseFloat(attrs.size || '1.0');
-                    break;
-                case 'SuperSourceV2BoxXPosition':
-                    box.xPosition = parseFloat(attrs.xPosition || '0.0');
-                    break;
-                case 'SuperSourceV2BoxYPosition':
-                    box.yPosition = parseFloat(attrs.yPosition || '0.0');
-                    break;
-                case 'SuperSourceV2BoxMaskEnable':
-                case 'SuperSourceV2BoxCropEnable':
-                    box.maskEnable = (attrs.enable || 'False').toLowerCase() === 'true';
-                    break;
-                case 'SuperSourceV2BoxMaskLeft':
-                case 'SuperSourceV2BoxCropLeft':
-                    box.maskLeft = parseFloat(attrs.left || '0.0');
-                    break;
-                case 'SuperSourceV2BoxMaskTop':
-                case 'SuperSourceV2BoxCropTop':
-                    box.maskTop = parseFloat(attrs.top || '0.0');
-                    break;
-                case 'SuperSourceV2BoxMaskRight':
-                case 'SuperSourceV2BoxCropRight':
-                    box.maskRight = parseFloat(attrs.right || '0.0');
-                    break;
-                case 'SuperSourceV2BoxMaskBottom':
-                case 'SuperSourceV2BoxCropBottom':
-                    box.maskBottom = parseFloat(attrs.bottom || '0.0');
-                    break;
+            // Check if it's an Op line
+            if (line.startsWith('<Op ')) {
+                const opMatch = line.match(/<Op\s+([^>]+)\/>/);
+                if (!opMatch) {
+                    errors.push(`Line ${lineNum + 1}: Invalid Op format - ${line}`);
+                    if (strict) continue;
+                }
+                
+                const attrsStr = opMatch ? opMatch[1] : '';
+                const attrs = {};
+                const attrPattern = /(\w+)="([^"]*)"/g;
+                let attrMatch;
+                
+                while ((attrMatch = attrPattern.exec(attrsStr)) !== null) {
+                    attrs[attrMatch[1]] = attrMatch[2];
+                }
+                
+                const opId = attrs.id || '';
+                
+                // Check if this is a known Op ID
+                if (!this.KNOWN_OP_IDS.has(opId)) {
+                    errors.push(`Line ${lineNum + 1}: Unknown Op ID "${opId}"`);
+                    if (strict) continue;
+                }
+                
+                // Skip MacroSleep as it doesn't affect box states
+                if (opId === 'MacroSleep') continue;
+                
+                const boxIndex = parseInt(attrs.boxIndex || '0');
+                const superSource = parseInt(attrs.superSource || '0');
+                
+                if (!(boxIndex in boxes)) {
+                    boxes[boxIndex] = new BoxState(boxIndex, superSource);
+                }
+                
+                const box = boxes[boxIndex];
+                
+                // Parse based on Op ID
+                try {
+                    switch (opId) {
+                        case 'SuperSourceV2BoxEnable':
+                            box.enable = (attrs.enable || 'False').toLowerCase() === 'true';
+                            break;
+                        case 'SuperSourceV2BoxSize':
+                            box.size = parseFloat(attrs.size || '1.0');
+                            break;
+                        case 'SuperSourceV2BoxXPosition':
+                            box.xPosition = parseFloat(attrs.xPosition || '0.0');
+                            break;
+                        case 'SuperSourceV2BoxYPosition':
+                            box.yPosition = parseFloat(attrs.yPosition || '0.0');
+                            break;
+                        case 'SuperSourceV2BoxMaskEnable':
+                        case 'SuperSourceV2BoxCropEnable':
+                            box.maskEnable = (attrs.enable || 'False').toLowerCase() === 'true';
+                            break;
+                        case 'SuperSourceV2BoxMaskLeft':
+                        case 'SuperSourceV2BoxCropLeft':
+                            box.maskLeft = parseFloat(attrs.left || '0.0');
+                            break;
+                        case 'SuperSourceV2BoxMaskTop':
+                        case 'SuperSourceV2BoxCropTop':
+                            box.maskTop = parseFloat(attrs.top || '0.0');
+                            break;
+                        case 'SuperSourceV2BoxMaskRight':
+                        case 'SuperSourceV2BoxCropRight':
+                            box.maskRight = parseFloat(attrs.right || '0.0');
+                            break;
+                        case 'SuperSourceV2BoxMaskBottom':
+                        case 'SuperSourceV2BoxCropBottom':
+                            box.maskBottom = parseFloat(attrs.bottom || '0.0');
+                            break;
+                    }
+                } catch (e) {
+                    errors.push(`Line ${lineNum + 1}: Parse error - ${e.message}`);
+                }
+            } else {
+                // Unknown line format
+                errors.push(`Line ${lineNum + 1}: Unknown line format - ${line}`);
+                if (strict) continue;
             }
         }
         
+        if (strict && errors.length > 0) {
+            throw new Error(`XML Parse Errors:\n${errors.join('\n')}`);
+        }
+        
         return boxes;
+    }
+    
+    /**
+     * Format XML by removing invalid lines, comments, and empty lines
+     * @param {string} xmlText - The XML text to format
+     * @returns {string} - Cleaned XML with only valid Op lines
+     */
+    static formatXML(xmlText) {
+        const lines = xmlText.split('\n');
+        const validLines = [];
+        
+        for (const line of lines) {
+            const trimmed = line.trim();
+            
+            // Skip empty lines
+            if (!trimmed) continue;
+            
+            // Skip comments
+            if (trimmed.startsWith('<!--') || trimmed.startsWith('<!') || trimmed.includes('-->')) continue;
+            
+            // Skip Macro tag lines
+            if (trimmed.startsWith('<Macro') || trimmed.startsWith('</Macro>')) continue;
+            
+            // Skip XML declaration and Profile tags
+            if (trimmed.startsWith('<?xml') || trimmed.startsWith('<Profile') || trimmed.startsWith('</Profile>') ||
+                trimmed.startsWith('<MacroPool') || trimmed.startsWith('</MacroPool>') || trimmed.startsWith('<MacroControl')) continue;
+            
+            // Check if it's a valid Op line
+            if (trimmed.startsWith('<Op ')) {
+                const opMatch = trimmed.match(/<Op\s+([^>]+)\/>/);
+                if (!opMatch) continue; // Invalid Op format
+                
+                const attrsStr = opMatch[1];
+                const attrs = {};
+                const attrPattern = /(\w+)="([^"]*)"/g;
+                let attrMatch;
+                
+                while ((attrMatch = attrPattern.exec(attrsStr)) !== null) {
+                    attrs[attrMatch[1]] = attrMatch[2];
+                }
+                
+                const opId = attrs.id || '';
+                
+                // Only keep known Op IDs
+                if (this.KNOWN_OP_IDS.has(opId)) {
+                    validLines.push(trimmed);
+                }
+            }
+        }
+        
+        return validLines.join('\n');
+    }
+    
+    /**
+     * Parse a complete macro XML to extract transitions
+     * Returns initial states, final states, frames, and easing type
+     * @param {string} macroXML - Complete macro XML content
+     * @returns {object} - {initialStates, finalStates, frames, easingType, name, description}
+     */
+    static parseMacroTransition(macroXML) {
+        const lines = macroXML.split('\n');
+        
+        // Extract frames and easing from comment
+        let frames = 30;
+        let easingType = 'linear';
+        
+        for (const line of lines) {
+            const trimmed = line.trim();
+            if (trimmed.startsWith('<!-- Duration:')) {
+                const frameMatch = trimmed.match(/Duration:\s*(\d+)\s*frames/);
+                const easingMatch = trimmed.match(/Easing:\s*(\w+)/);
+                if (frameMatch) frames = parseInt(frameMatch[1]);
+                if (easingMatch) easingType = easingMatch[1];
+                break;
+            }
+        }
+        
+        // Find Initial and Final sections
+        let inInitial = false;
+        let inFinal = false;
+        let initialXML = [];
+        let finalXML = [];
+        
+        for (const line of lines) {
+            const trimmed = line.trim();
+            
+            if (trimmed.includes('<!-- Initial Enable States -->') || trimmed.includes('<!-- Initial Positions and Masks -->')) {
+                inInitial = true;
+                inFinal = false;
+                continue;
+            }
+            
+            if (trimmed.includes('<!-- Animation Frames -->')) {
+                inInitial = false;
+                continue;
+            }
+            
+            if (trimmed.includes('<!-- Final States -->')) {
+                inFinal = true;
+                inInitial = false;
+                continue;
+            }
+            
+            if (inInitial && trimmed.startsWith('<Op ')) {
+                initialXML.push(trimmed);
+            } else if (inFinal && trimmed.startsWith('<Op ')) {
+                finalXML.push(trimmed);
+            }
+        }
+        
+        // Parse initial and final states
+        const initialStates = this.parseOps(initialXML.join('\n'), false);
+        const finalStates = this.parseOps(finalXML.join('\n'), false);
+        
+        // Calculate frames and easing mathematically by analyzing the animation frames
+        const calculatedParams = this.analyzeAnimationFrames(macroXML);
+        if (calculatedParams) {
+            frames = calculatedParams.frames;
+            easingType = calculatedParams.easingType;
+        }
+        
+        return {
+            initialStates,
+            finalStates,
+            frames,
+            easingType
+        };
+    }
+    
+    /**
+     * Analyze animation frames to determine frame count and easing type mathematically
+     * @param {string} macroXML - Complete macro XML
+     * @returns {object|null} - {frames, easingType} or null if cannot determine
+     */
+    static analyzeAnimationFrames(macroXML) {
+        const lines = macroXML.split('\n');
+        const frameSamples = [];
+        
+        // Collect frame samples
+        for (const line of lines) {
+            const trimmed = line.trim();
+            const frameMatch = trimmed.match(/<!-- Frame (\d+)\/(\d+)/);
+            if (frameMatch) {
+                const currentFrame = parseInt(frameMatch[1]);
+                const totalFrames = parseInt(frameMatch[2]);
+                frameSamples.push({ current: currentFrame, total: totalFrames });
+            }
+        }
+        
+        if (frameSamples.length === 0) return null;
+        
+        // Get total frames from samples
+        const frames = frameSamples[frameSamples.length - 1].total;
+        
+        // Analyze easing by comparing position changes across frames
+        // This is a simplified heuristic - in practice, more sophisticated analysis would be needed
+        const easingType = this.detectEasingType(macroXML, frames);
+        
+        return { frames, easingType };
+    }
+    
+    /**
+     * Detect easing type by analyzing interpolation pattern
+     * @param {string} macroXML - Macro XML content
+     * @param {number} totalFrames - Total number of frames
+     * @returns {string} - Detected easing type
+     */
+    static detectEasingType(macroXML, totalFrames) {
+        // Extract position values across frames to detect easing pattern
+        const lines = macroXML.split('\n');
+        const positions = [];
+        
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i].trim();
+            if (line.includes('<!-- Frame') && line.includes('Box') !== -1) {
+                // Look for next XPosition line
+                for (let j = i + 1; j < Math.min(i + 10, lines.length); j++) {
+                    const nextLine = lines[j].trim();
+                    if (nextLine.includes('XPosition')) {
+                        const match = nextLine.match(/xPosition="([^"]+)"/);
+                        if (match) {
+                            positions.push(parseFloat(match[1]));
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        
+        if (positions.length < 3) return 'linear';
+        
+        // Analyze the pattern of changes
+        const deltas = [];
+        for (let i = 1; i < positions.length; i++) {
+            deltas.push(Math.abs(positions[i] - positions[i - 1]));
+        }
+        
+        // Check if deltas are increasing (ease_in), decreasing (ease_out), or both (ease_in_out)
+        const firstThird = deltas.slice(0, Math.floor(deltas.length / 3));
+        const lastThird = deltas.slice(-Math.floor(deltas.length / 3));
+        
+        const firstAvg = firstThird.reduce((a, b) => a + b, 0) / firstThird.length;
+        const lastAvg = lastThird.reduce((a, b) => a + b, 0) / lastThird.length;
+        
+        if (Math.abs(firstAvg - lastAvg) < firstAvg * 0.1) {
+            return 'linear';
+        } else if (lastAvg > firstAvg * 1.5) {
+            return 'ease_in';
+        } else if (firstAvg > lastAvg * 1.5) {
+            return 'ease_out';
+        } else {
+            return 'ease_in_out';
+        }
     }
 }
 
