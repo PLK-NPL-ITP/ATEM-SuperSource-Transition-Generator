@@ -176,6 +176,32 @@ const translations = {
             initialXmlCopied: 'Initial position XML copied to clipboard',
             finalXmlCopied: 'Final position XML copied to clipboard',
             outputInfo: 'Frames: {0} | Easing: {1} | Active Boxes: [{2}]'
+        },
+        macroPool: {
+            title: 'Macro Pool',
+            import: 'Import XML',
+            export: 'Export XML',
+            clear: 'Clear All',
+            hasContent: 'Has Content',
+            modified: 'Modified',
+            invalid: 'Invalid',
+            noSelection: 'No Macro Selected',
+            macroIndex: 'Macro #{index}',
+            name: 'Name',
+            description: 'Description',
+            load: 'Load to Editor',
+            save: 'Save Output',
+            reset: 'Reset',
+            emptyMacro: 'Selected macro is empty',
+            loadedSuccess: 'Macro #{index} loaded to editor',
+            savedSuccess: 'Saved to Macro #{index}',
+            resetSuccess: 'Macro #{index} cleared',
+            noOutputContent: 'No output content to save. Generate a transition first.',
+            importSuccess: 'Macros imported successfully',
+            exportSuccess: 'Macros exported successfully',
+            noMacrosToExport: 'No macros to export',
+            confirmClear: 'Are you sure you want to clear all macros?',
+            clearedAll: 'All macros cleared'
         }
     },
     zh: {
@@ -344,6 +370,32 @@ const translations = {
             initialXmlCopied: '初始位置 XML 已复制到剪贴板',
             finalXmlCopied: '最终位置 XML 已复制到剪贴板',
             outputInfo: '帧数: {0} | 缓动: {1} | 活动Box: [{2}]'
+        },
+        macroPool: {
+            title: 'Macro Pool',
+            import: '导入 XML',
+            export: '导出 XML',
+            clear: '清空全部',
+            hasContent: '有内容',
+            modified: '已修改',
+            invalid: '无效',
+            noSelection: '未选择 Macro',
+            macroIndex: 'Macro #{index}',
+            name: '名称',
+            description: '描述',
+            load: '加载到编辑器',
+            save: '保存输出',
+            reset: '重置',
+            emptyMacro: '所选 Macro 为空',
+            loadedSuccess: 'Macro #{index} 已加载到编辑器',
+            savedSuccess: '已保存到 Macro #{index}',
+            resetSuccess: 'Macro #{index} 已清空',
+            noOutputContent: '没有输出内容可保存。请先生成过渡动画。',
+            importSuccess: 'Macros 导入成功',
+            exportSuccess: 'Macros 导出成功',
+            noMacrosToExport: '没有 Macro 可导出',
+            confirmClear: '确定要清空所有 Macro 吗？',
+            clearedAll: '所有 Macro 已清空'
         }
     }
 };
@@ -464,8 +516,17 @@ class I18nManager {
         return path.split('.').reduce((current, key) => current?.[key], obj);
     }
     
-    t(key) {
-        return this.getNestedValue(translations[this.currentLang], key) || key;
+    t(key, params = null) {
+        let text = this.getNestedValue(translations[this.currentLang], key) || key;
+        
+        // Support object interpolation for {key} placeholders
+        if (params && typeof params === 'object') {
+            for (const [paramKey, paramValue] of Object.entries(params)) {
+                text = text.replace(new RegExp(`\\{${paramKey}\\}`, 'g'), paramValue);
+            }
+        }
+        
+        return text;
     }
     
     // Format a translation string with placeholders {0}, {1}, etc.

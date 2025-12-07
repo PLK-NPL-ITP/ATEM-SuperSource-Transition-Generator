@@ -117,6 +117,15 @@ const EasingCategories = {
     bounce: ['ease_in_bounce', 'ease_out_bounce', 'ease_in_out_bounce']
 };
 
+function findCategory(easingName) {
+    for (const [category, easings] of Object.entries(EasingCategories)) {
+        if (easings.includes(easingName)) {
+            return category;
+        }
+    }
+    return null; // 或 undefined，如果没找到
+}
+
 // ============== Box State Class ==============
 
 class BoxState {
@@ -388,7 +397,9 @@ const App = {
     },
     
     // Load states from parsed XML
-    loadStates(mode, parsedStates) {
+    // options: { skipAutoGenerate: boolean } - skip auto-generate after loading
+    loadStates(mode, parsedStates, options = {}) {
+        const { skipAutoGenerate = false } = options;
         const states = mode === 'initial' ? AppState.initialStates : AppState.finalStates;
         for (let i = 0; i < 4; i++) {
             if (parsedStates[i]) {
@@ -397,16 +408,43 @@ const App = {
                 states[i].reset();
             }
         }
-        this.update('load', { skipXml: true }); // Don't regenerate XML we just loaded
+        this.update('load', { skipXml: true, skipAutoGenerate }); // Don't regenerate XML we just loaded
+    },
+    
+    // Load both initial and final states at once (efficient batch loading)
+    // This only triggers auto-generate once at the end
+    loadBothStates(initialParsedStates, finalParsedStates) {
+        // Load initial states
+        for (let i = 0; i < 4; i++) {
+            if (initialParsedStates && initialParsedStates[i]) {
+                AppState.initialStates[i].copyFrom(initialParsedStates[i]);
+            } else {
+                AppState.initialStates[i].reset();
+            }
+        }
+        
+        // Load final states
+        for (let i = 0; i < 4; i++) {
+            if (finalParsedStates && finalParsedStates[i]) {
+                AppState.finalStates[i].copyFrom(finalParsedStates[i]);
+            } else {
+                AppState.finalStates[i].reset();
+            }
+        }
+        
+        // Single update call - triggers auto-generate only once
+        this.update('load');
     },
     
     // Clear states for a mode
-    clearStates(mode) {
+    // options: { skipAutoGenerate: boolean } - skip auto-generate after clearing
+    clearStates(mode, options = {}) {
+        const { skipAutoGenerate = false } = options;
         const states = mode === 'initial' ? AppState.initialStates : AppState.finalStates;
         for (let i = 0; i < 4; i++) {
             states[i].reset();
         }
-        this.update('reset', { skipXml: true } );
+        this.update('reset', { skipXml: true, skipAutoGenerate });
     },
     
     // Reset single box
@@ -434,6 +472,11 @@ const App = {
     setViewMode(mode) {
         AppState.viewMode = mode;
         this.update('mode', { skipXml: true, skipAutoGenerate: true });
+        
+        // Sync panel mode
+        if (this.boxControlPanel) {
+            this.boxControlPanel.setMode(mode);
+        }
     },
     
     // Set drag precision
@@ -455,8 +498,9 @@ const App = {
         // Redraw canvas
         this.update('mode', { skipXml: true, skipAutoGenerate: true, skipPanel: true });
         
-        // Update panel with transforming display
+        // Update panel with transforming display and set mode
         if (this.boxControlPanel) {
+            this.boxControlPanel.setMode('transforming');
             this.boxControlPanel.updateTransformingDisplay(states);
         }
     }
@@ -1130,7 +1174,7 @@ class TransitionGenerator {
      * 
      * @param {string} xmlText - Generated transition XML output
      * @returns {{ initialStates: Object, finalStates: Object, durationFrames: number, easingType: string }}
-     * @throws {Error} - If XML cannot be parsed
+     * @throws {Error} - If XML cannot be parsed or validation fails
      */
     static reverseParseOutput(xmlText) {
         const lines = xmlText.split('\n');
@@ -1143,13 +1187,20 @@ class TransitionGenerator {
         // Track MacroSleep to determine frame boundaries
         let currentFrame = 0;
         let totalMacroSleeps = 0;
+        let validOpCount = 0;
         
-        // Parse each line
+        // Allowed Op IDs for macro content validation (XMLParser.KNOWN_OP_IDS + MacroSleep)
+        const ALLOWED_OP_IDS = new Set([
+            ...XMLParser.KNOWN_OP_IDS,
+            'MacroSleep'
+        ]);
+        
+        // Parse each line with strict validation
         for (const line of lines) {
             const trimmed = line.trim();
             
             // Skip empty lines and comments
-            if (!trimmed || trimmed.startsWith('<!--') || trimmed.startsWith('--')) {
+            if (!trimmed || trimmed.startsWith('<!--') || trimmed.endsWith('-->')) {
                 continue;
             }
             
@@ -1157,11 +1208,28 @@ class TransitionGenerator {
             if (trimmed.includes('MacroSleep')) {
                 totalMacroSleeps++;
                 currentFrame++;
+                validOpCount++;
                 continue;
             }
             
             // Parse Op tags
-            if (!trimmed.startsWith('<Op ')) continue;
+            if (!trimmed.startsWith('<Op ')) {
+                // Unknown line format - not a valid transition macro
+                throw new Error(`Invalid macro content: Unknown line format`);
+            }
+            
+            // Extract id attribute for validation
+            const idMatch = trimmed.match(/id="([^"]*)"/);  
+            if (!idMatch) {
+                throw new Error(`Invalid macro content: Op tag missing id attribute`);
+            }
+            
+            const opId = idMatch[1];
+            if (!ALLOWED_OP_IDS.has(opId)) {
+                throw new Error(`Invalid macro content: Unknown Op id '${opId}'`);
+            }
+            
+            validOpCount++;
             
             // Extract attributes
             const attrs = {};
@@ -1171,7 +1239,6 @@ class TransitionGenerator {
                 attrs[match[1]] = match[2];
             }
             
-            const opId = attrs.id;
             const boxIndex = parseInt(attrs.boxIndex || '0');
             const superSource = parseInt(attrs.superSource || '0');
             
@@ -1185,7 +1252,7 @@ class TransitionGenerator {
             
             const boxData = frameData[currentFrame][boxIndex];
             
-            // Parse different Op types
+            // Parse different Op types (opId already extracted above)
             switch (opId) {
                 case 'SuperSourceV2BoxEnable':
                     const isEnabled = (attrs.enable || 'False').toLowerCase() === 'true';
@@ -1230,6 +1297,16 @@ class TransitionGenerator {
                     boxData.maskBottom = parseFloat(attrs.bottom);
                     break;
             }
+        }
+        
+        // Validation: Must have at least some valid operations
+        if (validOpCount === 0) {
+            throw new Error('Invalid macro: No valid operations found');
+        }
+        
+        // Validation: Must have at least one MacroSleep for animation
+        if (totalMacroSleeps === 0) {
+            throw new Error('Invalid macro: No MacroSleep found (not a transition animation)');
         }
         
         // Duration is MacroSleep count - 1 (initial sleep + animation frames)
@@ -1307,9 +1384,24 @@ class TransitionGenerator {
             }
         }
         
+        // Validation: Check if we have any meaningful initial or final position data
+        let hasAnyPositionData = false;
+        for (let i = 0; i < 4; i++) {
+            if (enableStates[i] || frameData[0]?.[i]) {
+                hasAnyPositionData = true;
+                break;
+            }
+        }
+        
+        if (!hasAnyPositionData) {
+            throw new Error('Invalid macro: No position data found');
+        }
+        
         // Detect easing type by analyzing interpolation curve
         const easingType = this._detectEasingType(frameData, initialStates, finalStates, durationFrames);
         
+        console.log(`[TransitionGenerator] Reverse parsed: Duration = ${durationFrames} frames, Easing = ${easingType}`);
+
         return {
             initialStates,
             finalStates,
@@ -1320,6 +1412,7 @@ class TransitionGenerator {
     
     /**
      * Detect easing type from frame data by curve fitting
+     * Works correctly regardless of duration (not just 30 frames)
      * @private
      */
     static _detectEasingType(frameData, initialStates, finalStates, durationFrames) {
@@ -1373,6 +1466,8 @@ class TransitionGenerator {
             return 'linear';
         }
         
+        // Collect sample points - use frame number relative to total duration
+        // Frame 0 is initial (before first MacroSleep), frames 1-durationFrames are animation
         for (let frame = 1; frame <= durationFrames; frame++) {
             const fd = frameData[frame];
             if (!fd || !fd[animatingBoxIndex]) continue;
@@ -1384,9 +1479,15 @@ class TransitionGenerator {
             // value = start + (end - start) * easedT
             // easedT = (value - start) / (end - start)
             const easedT = (value - startValue) / range;
+            
+            // IMPORTANT: inputT should be frame/durationFrames (normalized 0 to 1)
+            // This is the same formula used in generate() method
             const inputT = frame / durationFrames;
             
-            samplePoints.push({ inputT, easedT });
+            // Clamp easedT to valid range to handle floating point errors
+            const clampedEasedT = Math.max(0, Math.min(1, easedT));
+            
+            samplePoints.push({ inputT, easedT: clampedEasedT });
         }
         
         if (samplePoints.length < 3) {
@@ -1394,6 +1495,7 @@ class TransitionGenerator {
         }
         
         // Test against known easing functions and find best match
+        // Use Mean Squared Error (MSE) for comparison
         const easingNames = Object.keys(EasingFunctions);
         let bestMatch = 'linear';
         let bestError = Infinity;
@@ -1408,27 +1510,59 @@ class TransitionGenerator {
                 totalError += Math.pow(expected - actual, 2);
             }
             
-            const avgError = totalError / samplePoints.length;
+            // Normalize by number of samples for fair comparison
+            const mse = totalError / samplePoints.length;
             
-            if (avgError < bestError) {
-                bestError = avgError;
+            if (mse < bestError) {
+                bestError = mse;
                 bestMatch = name;
             }
         }
         
-        // If error is too high, default to linear
-        if (bestError > 0.01) {
-            // Try to determine if it's approximately one of the common easings
-            // by checking the overall shape
-            const midPoint = samplePoints.find(p => Math.abs(p.inputT - 0.5) < 0.1);
-            if (midPoint) {
-                const midEased = midPoint.easedT;
-                if (midEased < 0.3) {
-                    return 'ease_in';
-                } else if (midEased > 0.7) {
-                    return 'ease_out';
-                }
-            }
+        // For very small errors, we have a confident match
+        // Threshold adjusted based on typical floating point precision (4 decimal places in XML)
+        const confidenceThreshold = 0.0001;
+        if (bestError < confidenceThreshold) {
+            return bestMatch;
+        }
+        
+        // For moderate errors, still return best match but could be less accurate
+        // This handles cases where XML precision causes small deviations
+        const acceptableThreshold = 0.001;
+        if (bestError < acceptableThreshold) {
+            return bestMatch;
+        }
+        
+        // For higher errors, try to determine approximate easing category
+        // by analyzing the curve shape at key points
+        const earlyPoints = samplePoints.filter(p => p.inputT <= 0.3);
+        const midPoints = samplePoints.filter(p => p.inputT > 0.3 && p.inputT <= 0.7);
+        const latePoints = samplePoints.filter(p => p.inputT > 0.7);
+        
+        const avgEarly = earlyPoints.length > 0 
+            ? earlyPoints.reduce((sum, p) => sum + p.easedT, 0) / earlyPoints.length 
+            : 0;
+        const avgMid = midPoints.length > 0 
+            ? midPoints.reduce((sum, p) => sum + p.easedT, 0) / midPoints.length 
+            : 0.5;
+        const avgLate = latePoints.length > 0 
+            ? latePoints.reduce((sum, p) => sum + p.easedT, 0) / latePoints.length 
+            : 1;
+        
+        // Linear would have avgEarly ≈ 0.15, avgMid ≈ 0.5, avgLate ≈ 0.85
+        // Ease-in: slow start (avgEarly < 0.1), fast end
+        // Ease-out: fast start (avgEarly > 0.2), slow end
+        // Ease-in-out: slow both ends
+        
+        if (avgEarly < 0.08 && avgLate > 0.92) {
+            // Looks like ease-in-out pattern
+            return 'ease_in_out';
+        } else if (avgEarly < 0.1) {
+            // Slow start = ease-in
+            return 'ease_in';
+        } else if (avgEarly > 0.25) {
+            // Fast start = ease-out
+            return 'ease_out';
         }
         
         return bestMatch;
@@ -3523,6 +3657,7 @@ class SuperSourceTransitionApp {
         
         // Initialize App controller with references
         App.init(this);
+        new MacroPoolManager(this);
         
         // Initialize default drag precision
         App.setDragPrecision('medium');
@@ -3791,13 +3926,8 @@ class SuperSourceTransitionApp {
         // Update toggle button states
         this.updateToggleButtonStates(mode);
         
-        // Update via App.setViewMode (handles canvas redraw and panel update)
+        // Update via App.setViewMode (handles canvas redraw, panel update, and panel mode sync)
         App.setViewMode(mode);
-        
-        // Sync box control panel mode (enable/disable state)
-        if (this.boxControlPanel) {
-            this.boxControlPanel.setMode(mode);
-        }
     }
     
     // Update toggle button states based on mode
@@ -4115,7 +4245,6 @@ class SuperSourceTransitionApp {
             const output = this.generator.generate();
             
             this.outputXmlEl.querySelector('code').textContent = output;
-            console.log(TransitionGenerator.reverseParseOutput(output));
             
             // Show output section
             this.outputSection.classList.remove('hidden');
@@ -4199,11 +4328,7 @@ class SuperSourceTransitionApp {
             const states = this.generator.getFrameStates(this.currentFrame);
             App.setTransformingStates(states);
         }
-        
-        // Update box control panel mode (enable/disable state)
-        if (this.boxControlPanel) {
-            this.boxControlPanel.setMode(AppState.viewMode);
-        }
+        // Panel mode is now automatically synced by App.setViewMode() and App.setTransformingStates()
     }
     
     stepFrame(delta) {
@@ -4455,15 +4580,851 @@ class SuperSourceTransitionApp {
 <Op id="SuperSourceV2BoxMaskRight" superSource="0" boxIndex="0" right="2.00"/>
 <Op id="SuperSourceV2BoxMaskBottom" superSource="0" boxIndex="0" bottom="0.00"/>`;
 
+        // Update XML textareas
         this.initialXmlEl.value = initialSample;
         this.finalXmlEl.value = finalSample;
         
-        this.previewInitial(true);
-        this.previewFinal(true);
-        App.update();
+        // Parse both XMLs and load states in a single batch operation
+        // This triggers auto-generate only ONCE instead of three times
+        try {
+            const initialStates = XMLParser.parseOps(initialSample);
+            const finalStates = XMLParser.parseOps(finalSample);
+            App.loadBothStates(initialStates, finalStates);
+            
+            const i18n = window.i18nManager;
+            toast.success(i18n.t('toast.loaded'), i18n.t('toast.loadedSuccess'));
+        } catch (e) {
+            console.error('[loadSample] Parse error:', e.message);
+            const i18n = window.i18nManager;
+            toast.error(i18n.t('toast.parseError'), e.message);
+        }
+    }
+}
+
+// ============== MacroPool Manager ==============
+
+/**
+ * MacroPool Manager - Manages a pool of 100 macros (indices 0-99)
+ * Provides UI for selecting, editing, loading, and saving macros
+ */
+class MacroPoolManager {
+    constructor(mainApp) {
+        // Storage: Map<number, { name: string, description: string, content: string }>
+        this.macros = new Map();
+        // Track original content for modification detection
+        this.originalMacros = new Map();
+        // Track validation status: Map<number, { valid: boolean, error?: string }>
+        this.macroValidationStatus = new Map();
+
+        this.mainApp = mainApp;
         
+        // Store imported XML for export preservation
+        this.importedXmlDoc = null;
+        this.importedXmlText = null;
+        
+        // Current state
+        this.currentPage = 0;
+        this.selectedIndex = null;
+        this.macrosPerPage = 20;
+        this.totalPages = 5;
+        
+        // Cache DOM elements
+        this.gridEl = document.getElementById('macroSelectorGrid');
+        this.pageSelect = document.getElementById('macroPageSelect');
+        this.prevPageBtn = document.getElementById('macroPrevPageBtn');
+        this.nextPageBtn = document.getElementById('macroNextPageBtn');
+        this.indexDisplay = document.getElementById('macroIndexDisplay');
+        this.nameInput = document.getElementById('macroNameInput');
+        this.descInput = document.getElementById('macroDescInput');
+        this.loadBtn = document.getElementById('macroLoadBtn');
+        this.saveBtn = document.getElementById('macroSaveBtn');
+        this.resetBtn = document.getElementById('macroResetBtn');
+        this.importBtn = document.getElementById('importMacroPoolBtn');
+        this.exportBtn = document.getElementById('exportMacroPoolBtn');
+        this.clearBtn = document.getElementById('clearMacroPoolBtn');
+        this.fileInput = document.getElementById('macroPoolFileInput');
+        
+        this.init();
+    }
+    
+    init() {
+        this.renderGrid();
+        this.bindEvents();
+        this.updatePageControls();
+        this.updateEditorState();
+        this.setupBeforeUnloadWarning();
+    }
+    
+    // ============== Grid Rendering ==============
+    
+    renderGrid() {
+        if (!this.gridEl) return;
+        
+        this.gridEl.innerHTML = '';
+        const startIndex = this.currentPage * this.macrosPerPage;
+        
+        // Create 20 cells (2 rows x 10 columns)
+        for (let i = 0; i < this.macrosPerPage; i++) {
+            const macroIndex = startIndex + i;
+            const cell = document.createElement('div');
+            cell.className = 'macro-cell';
+            cell.dataset.index = macroIndex;
+            cell.textContent = macroIndex;
+            
+            // Apply states
+            this.updateCellState(cell, macroIndex);
+            
+            // Selection state
+            if (macroIndex === this.selectedIndex) {
+                cell.classList.add('selected');
+            }
+            
+            this.gridEl.appendChild(cell);
+        }
+    }
+    
+    updateCellState(cell, index) {
+        cell.classList.remove('has-content', 'modified', 'error');
+        
+        const macro = this.macros.get(index);
+        if (!macro || !macro.content) return;
+        
+        // Has content
+        cell.classList.add('has-content');
+        
+        // Check if modified (different from original)
+        const original = this.originalMacros.get(index);
+        if (original) {
+            if (macro.content !== original.content || 
+                macro.name !== original.name || 
+                macro.description !== original.description) {
+                cell.classList.add('modified');
+            }
+        } else {
+            // New macro (not from import)
+            cell.classList.add('modified');
+        }
+        
+        // Check for validity using reverseParseOutput
+        // First check cached validation status from import
+        const cachedStatus = this.macroValidationStatus?.get(index);
+        if (cachedStatus !== undefined) {
+            if (!cachedStatus.valid) {
+                cell.classList.add('error');
+            }
+            return;
+        }
+        
+        // For new/modified macros, validate using reverseParseOutput
+        try {
+            TransitionGenerator.reverseParseOutput(macro.content);
+        } catch (e) {
+            cell.classList.add('error');
+        }
+    }
+    
+    updateAllCellStates() {
+        if (!this.gridEl) return;
+        
+        const cells = this.gridEl.querySelectorAll('.macro-cell');
+        cells.forEach(cell => {
+            const index = parseInt(cell.dataset.index);
+            this.updateCellState(cell, index);
+        });
+    }
+    
+    // ============== Page Navigation ==============
+    
+    setPage(page) {
+        if (page < 0 || page >= this.totalPages) return;
+        this.currentPage = page;
+        this.renderGrid();
+        this.updatePageControls();
+    }
+    
+    updatePageControls() {
+        if (this.pageSelect) {
+            this.pageSelect.value = this.currentPage;
+        }
+        if (this.prevPageBtn) {
+            this.prevPageBtn.disabled = this.currentPage === 0;
+        }
+        if (this.nextPageBtn) {
+            this.nextPageBtn.disabled = this.currentPage === this.totalPages - 1;
+        }
+    }
+    
+    // ============== Selection ==============
+    
+    selectMacro(index) {
+        this.selectedIndex = index;
+        
+        // Update grid selection
+        const cells = this.gridEl.querySelectorAll('.macro-cell');
+        cells.forEach(cell => {
+            if (parseInt(cell.dataset.index) === index) {
+                cell.classList.add('selected');
+            } else {
+                cell.classList.remove('selected');
+            }
+        });
+        
+        // Update editor
+        this.updateEditorState();
+    }
+    
+    updateEditorState() {
         const i18n = window.i18nManager;
-        toast.success(i18n.t('toast.loaded'), i18n.t('toast.loadedSuccess'));
+        
+        if (this.selectedIndex === null) {
+            // No selection
+            if (this.indexDisplay) {
+                this.indexDisplay.textContent = i18n?.t('macroPool.noSelection') || 'No Macro Selected';
+            }
+            if (this.nameInput) {
+                this.nameInput.value = '';
+                this.nameInput.disabled = true;
+            }
+            if (this.descInput) {
+                this.descInput.value = '';
+                this.descInput.disabled = true;
+            }
+            if (this.loadBtn) this.loadBtn.disabled = true;
+            if (this.saveBtn) this.saveBtn.disabled = true;
+            if (this.resetBtn) this.resetBtn.disabled = true;
+            return;
+        }
+        
+        // Has selection
+        const macro = this.macros.get(this.selectedIndex);
+        
+        if (this.indexDisplay) {
+            const indexText = i18n?.t('macroPool.macroIndex', { index: this.selectedIndex }) || `Macro #${this.selectedIndex}`;
+            this.indexDisplay.textContent = indexText;
+        }
+        
+        if (this.nameInput) {
+            this.nameInput.value = macro?.name || '';
+            this.nameInput.disabled = false;
+        }
+        
+        if (this.descInput) {
+            this.descInput.value = macro?.description || '';
+            this.descInput.disabled = false;
+        }
+        
+        // Load button: enabled only if macro has content AND is valid
+        if (this.loadBtn) {
+            let canLoad = !!macro?.content;
+            if (canLoad) {
+                // Check validation status
+                const cachedStatus = this.macroValidationStatus?.get(this.selectedIndex);
+                if (cachedStatus !== undefined && !cachedStatus.valid) {
+                    canLoad = false;
+                } else if (cachedStatus === undefined && macro?.content) {
+                    // Validate on-demand for new/modified macros
+                    try {
+                        TransitionGenerator.reverseParseOutput(macro.content);
+                    } catch (e) {
+                        canLoad = false;
+                    }
+                }
+            }
+            this.loadBtn.disabled = !canLoad;
+        }
+        
+        // Save button: always enabled when selected
+        if (this.saveBtn) {
+            this.saveBtn.disabled = false;
+        }
+        
+        // Reset button: enabled only if macro has content
+        if (this.resetBtn) {
+            this.resetBtn.disabled = !macro?.content;
+        }
+    }
+    
+    // ============== Macro Operations ==============
+    
+    /**
+     * Load selected macro content to editor using reverse parsing
+     */
+    loadToEditor() {
+        const i18n = window.i18nManager;
+        
+        if (this.selectedIndex === null) {
+            toast.warning(i18n?.t('toast.warning') || 'Warning', i18n?.t('macroPool.noSelection') || 'No macro selected');
+            return;
+        }
+        
+        const macro = this.macros.get(this.selectedIndex);
+        if (!macro?.content) {
+            toast.warning(i18n?.t('toast.warning') || 'Warning', i18n?.t('macroPool.emptyMacro') || 'Macro is empty');
+            return;
+        }
+        
+        try {
+            // Use TransitionGenerator.reverseParseOutput to extract initial and final states
+            const parsed = TransitionGenerator.reverseParseOutput(macro.content);
+                      
+            // Update duration and easing if available
+            const durationInput = document.getElementById('duration');
+            const easingCategory = document.getElementById('easingCategory');
+            const easingSelect = document.getElementById('easingType');
+            
+            if (durationInput && parsed.durationFrames) {
+                durationInput.value = parsed.durationFrames;
+                AppState.durationFrames = parsed.durationFrames;
+            }
+            
+            if (easingSelect && parsed.easingType) {
+                easingCategory.value = findCategory(parsed.easingType);
+                this.mainApp.updateEasingOptions();
+                easingSelect.value = parsed.easingType;
+                this.mainApp.updateEasingPreview();
+                AppState.easingType = parsed.easingType;
+            }
+
+            // Load both states to the app
+            App.loadBothStates(parsed.initialStates, parsed.finalStates);
+            
+            console.log(this.selectedIndex);
+            toast.success(
+                i18n?.t('toast.loaded') || 'Loaded',
+                i18n?.t('macroPool.loadedSuccess', { index: this.selectedIndex }) || `Macro #${this.selectedIndex} loaded`
+            );
+        } catch (e) {
+            console.error('[MacroPool] Load error:', e);
+            toast.error(
+                i18n?.t('toast.parseError') || 'Parse Error',
+                e.message
+            );
+        }
+    }
+    
+    /**
+     * Save current output preview content to selected macro
+     */
+    saveToMacro() {
+        const i18n = window.i18nManager;
+        
+        if (this.selectedIndex === null) {
+            toast.warning(i18n?.t('toast.warning') || 'Warning', i18n?.t('macroPool.noSelection') || 'No macro selected');
+            return;
+        }
+        
+        // Get output content from the output preview
+        const outputEl = document.querySelector('#outputXml code');
+        const content = outputEl?.textContent || '';
+        
+        // Check if content is valid (not placeholder)
+        if (!content || content.includes('Generated XML') || content.includes('生成的 XML')) {
+            toast.warning(
+                i18n?.t('toast.warning') || 'Warning',
+                i18n?.t('macroPool.noOutputContent') || 'No output content to save. Generate a transition first.'
+            );
+            return;
+        }
+        
+        // Get name and description from inputs
+        const name = this.nameInput?.value || `Macro ${this.selectedIndex}`;
+        const description = this.descInput?.value || '';
+        
+        // Save to macro
+        this.macros.set(this.selectedIndex, {
+            name,
+            description,
+            content
+        });
+        
+        // Update validation status for the saved macro
+        try {
+            TransitionGenerator.reverseParseOutput(content);
+            this.macroValidationStatus.set(this.selectedIndex, { valid: true });
+        } catch (e) {
+            this.macroValidationStatus.set(this.selectedIndex, { valid: false, error: e.message });
+        }
+        
+        // Update UI
+        this.updateAllCellStates();
+        this.updateEditorState();
+        this.updateGlobalButtons();
+        
+        toast.success(
+            i18n?.t('toast.saved') || 'Saved',
+            i18n?.t('macroPool.savedSuccess', { index: this.selectedIndex }) || `Saved to Macro #${this.selectedIndex}`
+        );
+    }
+    
+    /**
+     * Reset (clear) selected macro
+     */
+    resetMacro() {
+        const i18n = window.i18nManager;
+        
+        if (this.selectedIndex === null) return;
+        
+        // Remove from storage
+        this.macros.delete(this.selectedIndex);
+        this.originalMacros.delete(this.selectedIndex);
+        this.macroValidationStatus.delete(this.selectedIndex);
+        
+        // Clear editor fields
+        if (this.nameInput) this.nameInput.value = '';
+        if (this.descInput) this.descInput.value = '';
+        
+        // Update UI
+        this.updateAllCellStates();
+        this.updateEditorState();
+        this.updateGlobalButtons();
+        
+        toast.info(
+            i18n?.t('toast.info') || 'Info',
+            i18n?.t('macroPool.resetSuccess', { index: this.selectedIndex }) || `Macro #${this.selectedIndex} cleared`
+        );
+    }
+    
+    // ============== Import/Export ==============
+    
+    /**
+     * Import macros from ATEM XML file
+     */
+    importFromFile(file) {
+        const i18n = window.i18nManager;
+        const reader = new FileReader();
+        
+        reader.onload = (e) => {
+            try {
+                const xmlText = e.target.result;
+                this.parseImportXml(xmlText);
+                
+                toast.success(
+                    i18n?.t('toast.loaded') || 'Loaded',
+                    i18n?.t('macroPool.importSuccess') || 'Macros imported successfully'
+                );
+            } catch (err) {
+                console.error('[MacroPool] Import error:', err);
+                toast.error(
+                    i18n?.t('toast.parseError') || 'Parse Error',
+                    err.message
+                );
+            }
+        };
+        
+        reader.onerror = () => {
+            toast.error(
+                i18n?.t('toast.error') || 'Error',
+                i18n?.t('toast.fileReadError') || 'Failed to read file'
+            );
+        };
+        
+        reader.readAsText(file);
+    }
+    
+    parseImportXml(xmlText) {
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(xmlText, 'text/xml');
+        
+        // Check for parse errors
+        const parseError = doc.querySelector('parsererror');
+        if (parseError) {
+            throw new Error('Invalid XML format');
+        }
+        
+        // Check for valid Profile root element
+        const profile = doc.querySelector('Profile');
+        if (!profile) {
+            throw new Error('Invalid ATEM XML: Missing Profile element');
+        }
+        
+        // Store the original XML document for export preservation
+        this.importedXmlDoc = doc;
+        this.importedXmlText = xmlText;
+        
+        // Find MacroPool - if not present, it's valid but empty
+        const macroPool = doc.querySelector('MacroPool');
+        
+        // Clear existing macros
+        this.macros.clear();
+        this.originalMacros.clear();
+        // Track which macros are valid for loading
+        this.macroValidationStatus = new Map();
+        
+        if (!macroPool) {
+            // Valid XML but no MacroPool - empty pool
+            this.renderGrid();
+            this.updateEditorState();
+            this.updateGlobalButtons();
+            return;
+        }
+        
+        // Find all Macro elements within MacroPool
+        const macros = macroPool.querySelectorAll('Macro');
+        
+        macros.forEach(macro => {
+            const index = parseInt(macro.getAttribute('index') || '0');
+            const name = macro.getAttribute('name') || `Macro ${index}`;
+            const description = macro.getAttribute('description') || '';
+            
+            // Get inner content (all Op elements)
+            let content = '';
+            const ops = macro.querySelectorAll('Op');
+            if (ops.length > 0) {
+                content = Array.from(ops).map(op => {
+                    // Serialize Op element back to XML string
+                    const serializer = new XMLSerializer();
+                    return serializer.serializeToString(op);
+                }).join('\n');
+            } else {
+                // Fallback: get inner text
+                content = macro.innerHTML.trim();
+            }
+            
+            if (content) {
+                const macroData = { name, description, content };
+                this.macros.set(index, macroData);
+                // Store original for modification tracking
+                this.originalMacros.set(index, { ...macroData });
+                
+                // Validate macro content using reverseParseOutput
+                try {
+                    TransitionGenerator.reverseParseOutput(content);
+                    this.macroValidationStatus.set(index, { valid: true });
+                } catch (e) {
+                    this.macroValidationStatus.set(index, { valid: false, error: e.message });
+                }
+            }
+        });
+        
+        // Refresh UI
+        this.renderGrid();
+        this.updateEditorState();
+        this.updateGlobalButtons();
+    }
+    
+    /**
+     * Build MacroPool XML content from current macros
+     */
+    buildMacroPoolXml(indent = '\t') {
+        const lines = [];
+        
+        // Add generator information comment
+        lines.push(`${indent}<!--`);
+        lines.push(`${indent}  Generated by: SuperSource Transition Generator`);
+        lines.push(`${indent}  Author: Jason Yang Jiepeng, NPL ITP Infrastructure (Development) Group`);
+        lines.push(`${indent}  GitHub: https://github.com/PLK-NPL-ITP/ATEM-SuperSource-Transition-Generator`);
+        lines.push(`${indent}  License: MIT License`);
+        lines.push(`${indent}  Generated: ${new Date().toISOString()}`);
+        lines.push(`${indent}-->`);
+        lines.push(`${indent}<MacroPool>`);
+        
+        // Sort by index and add each macro
+        const sortedIndices = Array.from(this.macros.keys()).sort((a, b) => a - b);
+        
+        for (const index of sortedIndices) {
+            const macro = this.macros.get(index);
+            if (!macro?.content) continue;
+            
+            // Escape XML attributes
+            const escapedName = this.escapeXmlAttr(macro.name || `Macro ${index}`);
+            const escapedDesc = this.escapeXmlAttr(macro.description || '');
+            
+            lines.push(`${indent}\t<Macro index="${index}" name="${escapedName}" description="${escapedDesc}">`);
+            
+            // Indent content
+            const contentLines = macro.content.split('\n');
+            for (const line of contentLines) {
+                if (line.trim()) {
+                    lines.push(`${indent}\t\t${line.trim()}`);
+                }
+            }
+            
+            lines.push(`${indent}\t</Macro>`);
+        }
+        
+        lines.push(`${indent}</MacroPool>`);
+        return lines.join('\n');
+    }
+    
+    /**
+     * Export all macros to ATEM XML format
+     * Preserves other content from imported XML if available
+     */
+    async exportToFile() {
+        const i18n = window.i18nManager;
+        
+        let xmlContent;
+        
+        if (this.importedXmlText && this.importedXmlDoc) {
+            // We have an imported XML - preserve other content, only modify MacroPool
+            xmlContent = this.buildExportWithPreservedContent();
+        } else {
+            // No imported XML - create new structure
+            if (this.macros.size === 0) {
+                toast.warning(
+                    i18n?.t('toast.warning') || 'Warning',
+                    i18n?.t('macroPool.noMacrosToExport') || 'No macros to export'
+                );
+                return;
+            }
+            xmlContent = this.buildNewExportXml();
+        }
+        
+        // Save file
+        if ('showSaveFilePicker' in window) {
+            try {
+                const handle = await window.showSaveFilePicker({
+                    suggestedName: 'MacroPool.xml',
+                    types: [{
+                        description: 'XML Files',
+                        accept: { 'application/xml': ['.xml'] }
+                    }]
+                });
+                const writable = await handle.createWritable();
+                await writable.write(xmlContent);
+                await writable.close();
+                
+                // Mark all as original (no longer modified)
+                this.macros.forEach((macro, index) => {
+                    this.originalMacros.set(index, { ...macro });
+                });
+                this.updateAllCellStates();
+                
+                toast.success(
+                    i18n?.t('toast.saved') || 'Saved',
+                    i18n?.t('macroPool.exportSuccess') || 'Macros exported successfully'
+                );
+                return;
+            } catch (err) {
+                if (err.name === 'AbortError') return;
+            }
+        }
+        
+        // Fallback download
+        const blob = new Blob([xmlContent], { type: 'application/xml' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'MacroPool.xml';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        
+        toast.success(
+            i18n?.t('toast.saved') || 'Saved',
+            i18n?.t('toast.fileDownloaded') || 'File downloaded'
+        );
+    }
+    
+    /**
+     * Build export XML preserving other content from imported XML
+     */
+    buildExportWithPreservedContent() {
+        let xmlText = this.importedXmlText;
+        
+        // Find and replace MacroPool section
+        const macroPoolRegex = /<MacroPool[\s\S]*?<\/MacroPool>/;
+        const newMacroPool = this.buildMacroPoolXml('\t');
+        
+        if (macroPoolRegex.test(xmlText)) {
+            // Replace existing MacroPool
+            xmlText = xmlText.replace(macroPoolRegex, newMacroPool);
+        } else {
+            // No MacroPool exists - insert before </Profile>
+            xmlText = xmlText.replace('</Profile>', `${newMacroPool}\n</Profile>`);
+        }
+        
+        return xmlText;
+    }
+    
+    /**
+     * Build new export XML from scratch
+     * Uses fixed header format for ATEM compatibility
+     */
+    buildNewExportXml() {
+        const lines = [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            '<Profile majorVersion="2" minorVersion="1" product="ATEM Mini Extreme ISO G2">',
+            this.buildMacroPoolXml('\t'),
+            '\t<MacroControl loop="False" />',
+            '</Profile>'
+        ];
+        return lines.join('\n');
+    }
+    
+    escapeXmlAttr(str) {
+        return str
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&apos;');
+    }
+    
+    /**
+     * Clear all macros
+     */
+    clearAll() {
+        const i18n = window.i18nManager;
+        
+        if (this.macros.size === 0) return;
+        
+        // Confirm before clearing
+        if (!confirm(i18n?.t('macroPool.confirmClear') || 'Are you sure you want to clear all macros?')) {
+            return;
+        }
+        
+        this.macros.clear();
+        this.originalMacros.clear();
+        this.macroValidationStatus.clear();
+        this.importedXmlDoc = null;
+        this.importedXmlText = null;
+        this.selectedIndex = null;
+        
+        this.renderGrid();
+        this.updateEditorState();
+        this.updateGlobalButtons();
+        
+        toast.info(
+            i18n?.t('toast.info') || 'Info',
+            i18n?.t('macroPool.clearedAll') || 'All macros cleared'
+        );
+    }
+    
+    updateGlobalButtons() {
+        const hasAnyMacro = this.macros.size > 0;
+        if (this.exportBtn) this.exportBtn.disabled = !hasAnyMacro;
+        if (this.clearBtn) this.clearBtn.disabled = !hasAnyMacro;
+    }
+    
+    /**
+     * Check if there are any unsaved (modified) macros
+     */
+    hasUnsavedChanges() {
+        for (const [index, macro] of this.macros) {
+            const original = this.originalMacros.get(index);
+            if (!original) {
+                // New macro not from import
+                return true;
+            }
+            if (macro.content !== original.content || 
+                macro.name !== original.name || 
+                macro.description !== original.description) {
+                return true;
+            }
+        }
+        return false;
+    }
+    
+    /**
+     * Setup beforeunload warning for unsaved changes
+     */
+    setupBeforeUnloadWarning() {
+        window.addEventListener('beforeunload', (e) => {
+            if (this.hasUnsavedChanges()) {
+                // Standard way to show confirmation dialog
+                e.preventDefault();
+                // For older browsers
+                e.returnValue = '';
+                return '';
+            }
+        });
+    }
+    
+    // ============== Event Binding ==============
+    
+    bindEvents() {
+        // Grid cell clicks
+        if (this.gridEl) {
+            this.gridEl.addEventListener('click', (e) => {
+                const cell = e.target.closest('.macro-cell');
+                if (cell) {
+                    const index = parseInt(cell.dataset.index);
+                    this.selectMacro(index);
+                }
+            });
+        }
+        
+        // Page navigation
+        if (this.prevPageBtn) {
+            this.prevPageBtn.addEventListener('click', () => {
+                this.setPage(this.currentPage - 1);
+            });
+        }
+        
+        if (this.nextPageBtn) {
+            this.nextPageBtn.addEventListener('click', () => {
+                this.setPage(this.currentPage + 1);
+            });
+        }
+        
+        if (this.pageSelect) {
+            this.pageSelect.addEventListener('change', (e) => {
+                this.setPage(parseInt(e.target.value));
+            });
+        }
+        
+        // Editor inputs - auto-save name/description on blur
+        if (this.nameInput) {
+            this.nameInput.addEventListener('blur', () => {
+                if (this.selectedIndex !== null) {
+                    const macro = this.macros.get(this.selectedIndex) || { name: '', description: '', content: '' };
+                    macro.name = this.nameInput.value;
+                    this.macros.set(this.selectedIndex, macro);
+                    this.updateAllCellStates();
+                }
+            });
+        }
+        
+        if (this.descInput) {
+            this.descInput.addEventListener('blur', () => {
+                if (this.selectedIndex !== null) {
+                    const macro = this.macros.get(this.selectedIndex) || { name: '', description: '', content: '' };
+                    macro.description = this.descInput.value;
+                    this.macros.set(this.selectedIndex, macro);
+                    this.updateAllCellStates();
+                }
+            });
+        }
+        
+        // Action buttons
+        if (this.loadBtn) {
+            this.loadBtn.addEventListener('click', () => this.loadToEditor());
+        }
+        
+        if (this.saveBtn) {
+            this.saveBtn.addEventListener('click', () => this.saveToMacro());
+        }
+        
+        if (this.resetBtn) {
+            this.resetBtn.addEventListener('click', () => this.resetMacro());
+        }
+        
+        // Import/Export/Clear
+        if (this.importBtn) {
+            this.importBtn.addEventListener('click', () => {
+                this.fileInput?.click();
+            });
+        }
+        
+        if (this.fileInput) {
+            this.fileInput.addEventListener('change', (e) => {
+                const file = e.target.files?.[0];
+                if (file) {
+                    this.importFromFile(file);
+                    e.target.value = ''; // Reset for re-import
+                }
+            });
+        }
+        
+        if (this.exportBtn) {
+            this.exportBtn.addEventListener('click', () => this.exportToFile());
+        }
+        
+        if (this.clearBtn) {
+            this.clearBtn.addEventListener('click', () => this.clearAll());
+        }
     }
 }
 

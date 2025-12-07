@@ -995,3 +995,219 @@ class BoxPreviewCanvas {
 - [ ] 是否保持了职责分离？
 - [ ] 是否添加了必要的注释？
 - [ ] 是否遵循了命名规范？
+
+---
+
+## XMLParser 严格验证 (XMLParser Strict Validation)
+
+### 验证功能 (Validation Features)
+
+`XMLParser` 提供严格的 XML 验证功能，确保输入数据的正确性。
+
+**已知有效的 Op ID:**
+```javascript
+static KNOWN_OP_IDS = new Set([
+    'SuperSourceV2BoxEnable',
+    'SuperSourceV2BoxSize',
+    'SuperSourceV2BoxXPosition',
+    'SuperSourceV2BoxYPosition',
+    'SuperSourceV2BoxMaskEnable',
+    'SuperSourceV2BoxCropEnable',
+    'SuperSourceV2BoxMaskLeft',
+    'SuperSourceV2BoxCropLeft',
+    'SuperSourceV2BoxMaskTop',
+    'SuperSourceV2BoxCropTop',
+    'SuperSourceV2BoxMaskRight',
+    'SuperSourceV2BoxCropRight',
+    'SuperSourceV2BoxMaskBottom',
+    'SuperSourceV2BoxCropBottom'
+]);
+```
+
+**可跳过的行类型:**
+- 空行
+- XML 声明 (`<?xml ...?>`)
+- Profile 标签
+- Macro 标签
+- MacroControl 标签
+- 注释行 (`<!-- ... -->`)
+- MacroSleep 等非 Box 操作
+
+### 核心验证方法 (Core Validation Methods)
+
+```javascript
+// 检查是否应跳过此行
+static isSkippableLine(line)
+
+// 验证单个 Op 行
+static validateOpLine(line) → { valid, error?, opId? }
+
+// 带验证的解析（可选严格模式）
+static parseOpsWithValidation(xmlText, strict = true) → { boxes, errors }
+
+// 严格模式解析（主要使用）
+static parseOps(xmlText) → boxes  // throws on error
+
+// 标准化 XML（移除无效行）
+static standardizeXml(xmlText) → { standardized, removedCount, errors }
+```
+
+### 使用规范 (Usage Guidelines)
+
+```javascript
+// ✅ 正确：使用严格解析
+try {
+    const states = XMLParser.parseOps(xmlText);
+    App.loadStates('initial', states);
+} catch (e) {
+    toast.error('Parse Error', e.message);
+}
+
+// ✅ 正确：使用带验证的宽松解析
+const { boxes, errors } = XMLParser.parseOpsWithValidation(xmlText, false);
+if (errors.length > 0) {
+    console.warn('Parse warnings:', errors);
+}
+
+// ✅ 正确：标准化用户输入
+const { standardized, removedCount } = XMLParser.standardizeXml(xmlText);
+textarea.value = standardized;
+```
+
+---
+
+## TransitionGenerator 逆解析 (TransitionGenerator Reverse Parsing)
+
+### reverseParseOutput 方法 (reverseParseOutput Method)
+
+`TransitionGenerator.reverseParseOutput` 是一个静态方法，用于从生成的过渡 XML 输出中逆向提取原始参数。
+
+**功能说明:**
+- 不依赖任何 XML 注释
+- 完全通过解析 Op 标签提取数据
+- 自动检测使用的缓动函数类型
+
+**返回值:**
+```javascript
+{
+    initialStates: Object,   // 初始状态 { 0: BoxState, 1: BoxState, ... }
+    finalStates: Object,     // 最终状态 { 0: BoxState, 1: BoxState, ... }
+    durationFrames: number,  // 持续帧数
+    easingType: string       // 缓动类型 (e.g., 'ease_in_out', 'linear')
+}
+```
+
+**解析逻辑:**
+1. **durationFrames**: 统计 `MacroSleep` 出现次数 - 1
+2. **initialStates**: 从第一个 `MacroSleep` 之前的数据提取
+3. **finalStates**: 从最后一帧的动画数据和最终 Enable 状态提取
+4. **easingType**: 通过最小二乘法曲线拟合，与所有已知缓动函数比较
+
+### 使用示例 (Usage Example)
+
+```javascript
+// 从生成的输出中逆解析参数
+const outputXml = outputTextarea.value;
+const result = TransitionGenerator.reverseParseOutput(outputXml);
+
+console.log('Duration:', result.durationFrames);
+console.log('Easing:', result.easingType);
+console.log('Initial Box 0 size:', result.initialStates[0].size);
+console.log('Final Box 0 size:', result.finalStates[0].size);
+```
+
+### 注意事项 (Notes)
+
+- 缓动检测通过分析插值曲线实现，误差阈值为 0.01
+- 如果没有找到动画的 Box，默认返回 `'linear'`
+- 需要至少 3 个采样点才能准确检测缓动类型
+
+---
+
+## 批量加载优化 (Batch Loading Optimization)
+
+### 问题背景 (Problem Background)
+
+在批量加载数据时（如 `loadSample`），如果分别调用 `App.loadStates('initial')` 和 `App.loadStates('final')`，会触发多次 `tryAutoGenerate()`，造成性能浪费。
+
+**错误示例:**
+```javascript
+// ❌ 这会触发 3 次 Generate Transition
+this.previewInitial(true);    // → App.loadStates → tryAutoGenerate
+this.previewFinal(true);      // → App.loadStates → tryAutoGenerate
+App.update();                 // → tryAutoGenerate
+```
+
+### 解决方案 (Solution)
+
+**1. loadStates 支持 skipAutoGenerate 选项:**
+```javascript
+// 加载但不触发自动生成
+App.loadStates('initial', states, { skipAutoGenerate: true });
+```
+
+**2. 使用 loadBothStates 批量加载:**
+```javascript
+// ✅ 只触发 1 次 Generate Transition
+const initialStates = XMLParser.parseOps(initialXml);
+const finalStates = XMLParser.parseOps(finalXml);
+App.loadBothStates(initialStates, finalStates);
+```
+
+### App 方法签名更新 (Updated Method Signatures)
+
+```javascript
+// 加载单个状态集
+loadStates(mode, parsedStates, options = {})
+// options: { skipAutoGenerate: boolean }
+
+// 清空单个状态集
+clearStates(mode, options = {})
+// options: { skipAutoGenerate: boolean }
+
+// 批量加载两个状态集（推荐用于同时加载）
+loadBothStates(initialParsedStates, finalParsedStates)
+// 只触发一次 update，效率更高
+```
+
+---
+
+## App 控制器完整方法列表 (Complete App Controller Methods)
+
+### 初始化 (Initialization)
+- `init(mainApp)` - 初始化引用
+
+### 统一更新 (Unified Update)
+- `update(source, options)` - 唯一的更新入口点
+
+### 状态操作 (State Operations)
+- `setBoxProperty(boxIndex, property, value)` - 设置 Box 属性
+- `toggleLink(boxIndex, linkType)` - 切换链接状态
+- `loadStates(mode, parsedStates, options)` - 加载单个状态集
+- `loadBothStates(initialStates, finalStates)` - 批量加载两个状态集
+- `clearStates(mode, options)` - 清空状态
+- `resetBox(boxIndex)` - 重置单个 Box
+- `swapStates()` - 交换初始/最终状态
+
+### 视图控制 (View Control)
+- `setViewMode(mode)` - 设置视图模式（包含面板同步）
+- `setTransformingStates(states)` - 设置变换状态（包含面板同步）
+- `setDragPrecision(precision)` - 设置拖动精度
+
+### 内部方法 (Internal Methods)
+- `handleLinkedMask(boxIndex, property, value)` - 处理链接遮罩
+- `syncXmlTextareas()` - 同步 XML 文本框
+
+### 重要原则 (Important Principles)
+
+1. **所有视图模式切换必须通过 App.setViewMode() 或 App.setTransformingStates()**
+   - 这些方法会自动同步 BoxControlPanel 的 mode
+   - 不要在外部再调用 `boxControlPanel.setMode()`
+
+2. **批量加载优先使用 loadBothStates()**
+   - 避免多次触发 `tryAutoGenerate()`
+   - 单次加载使用 `loadStates()` 并考虑 `skipAutoGenerate` 选项
+
+3. **组件间通信只通过 App**
+   - ❌ `this.previewCanvas.redraw()` + `this.boxControlPanel.updateUI()`
+   - ✅ `App.update('source', options)`
