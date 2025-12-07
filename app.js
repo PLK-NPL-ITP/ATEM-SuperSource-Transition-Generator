@@ -465,69 +465,244 @@ const App = {
 // ============== XML Parser ==============
 
 class XMLParser {
-    static parseOps(xmlText) {
-        const boxes = {};
-        const opPattern = /<Op\s+([^>]+)\/>/g;
-        const attrPattern = /(\w+)="([^"]*)"/g;
+    // Known valid Op IDs for SuperSource Box operations
+    static KNOWN_OP_IDS = new Set([
+        'SuperSourceV2BoxEnable',
+        'SuperSourceV2BoxSize',
+        'SuperSourceV2BoxXPosition',
+        'SuperSourceV2BoxYPosition',
+        'SuperSourceV2BoxMaskEnable',
+        'SuperSourceV2BoxCropEnable',
+        'SuperSourceV2BoxMaskLeft',
+        'SuperSourceV2BoxCropLeft',
+        'SuperSourceV2BoxMaskTop',
+        'SuperSourceV2BoxCropTop',
+        'SuperSourceV2BoxMaskRight',
+        'SuperSourceV2BoxCropRight',
+        'SuperSourceV2BoxMaskBottom',
+        'SuperSourceV2BoxCropBottom'
+    ]);
+    
+    /**
+     * Check if a line should be skipped during parsing validation
+     * Lines that are skipped: empty lines, XML declaration, Profile tags, MacroPool tags, 
+     * Macro tags, MacroControl tags, comment lines
+     * @param {string} line - Line to check
+     * @returns {boolean} - True if line should be skipped
+     */
+    static isSkippableLine(line) {
+        const trimmed = line.trim();
+        if (!trimmed) return true; // Empty line
+        if (trimmed.startsWith('<?xml')) return true; // XML declaration
+        if (trimmed.startsWith('<Profile')) return true; // Profile opening
+        if (trimmed.startsWith('</Profile')) return true; // Profile closing
+        if (trimmed.startsWith('<Macro ')) return true; // Macro opening
+        if (trimmed.startsWith('</Macro')) return true; // Macro closing
+        if (trimmed.startsWith('<!--') || trimmed.startsWith('--')) return true; // Comment
+        return false;
+    }
+    
+    /**
+     * Validate a single Op line
+     * @param {string} line - Line to validate
+     * @returns {{ valid: boolean, error?: string, opId?: string }} - Validation result
+     */
+    static validateOpLine(line) {
+        const trimmed = line.trim();
         
-        let match;
-        while ((match = opPattern.exec(xmlText)) !== null) {
-            const attrsStr = match[1];
-            const attrs = {};
-            let attrMatch;
+        // Check if it's an Op line
+        if (!trimmed.startsWith('<Op ')) {
+            return { valid: false, error: `Unknown line format: "${trimmed.substring(0, 50)}..."` };
+        }
+        
+        // Check if Op is properly closed
+        if (!trimmed.endsWith('/>')) {
+            return { valid: false, error: `Incomplete Op tag (missing />): "${trimmed.substring(0, 50)}..."` };
+        }
+        
+        // Extract attributes
+        const attrPattern = /(\w+)="([^"]*)"/g;
+        const attrs = {};
+        let attrMatch;
+        while ((attrMatch = attrPattern.exec(trimmed)) !== null) {
+            attrs[attrMatch[1]] = attrMatch[2];
+        }
+        
+        // Check required id attribute
+        if (!attrs.id) {
+            return { valid: false, error: `Op tag missing 'id' attribute: "${trimmed.substring(0, 50)}..."` };
+        }
+        
+        // Check if id is a known SuperSource operation
+        if (!this.KNOWN_OP_IDS.has(attrs.id)) {
+            return { valid: false, error: `Unknown Op id '${attrs.id}' - not a SuperSource Box operation` };
+        }
+        
+        // Check required boxIndex attribute
+        if (attrs.boxIndex === undefined) {
+            return { valid: false, error: `Op '${attrs.id}' missing 'boxIndex' attribute` };
+        }
+        
+        const boxIndex = parseInt(attrs.boxIndex);
+        if (isNaN(boxIndex) || boxIndex < 0 || boxIndex > 3) {
+            return { valid: false, error: `Op '${attrs.id}' has invalid boxIndex '${attrs.boxIndex}' (must be 0-3)` };
+        }
+        
+        return { valid: true, opId: attrs.id };
+    }
+    
+    /**
+     * Parse and validate XML, with strict error checking
+     * @param {string} xmlText - XML text to parse
+     * @param {boolean} strict - If true, throw error on any invalid line; if false, skip invalid lines
+     * @returns {{ boxes: Object, errors: Array<string> }} - Parsed boxes and any errors encountered
+     * @throws {Error} - In strict mode, throws on first invalid line
+     */
+    static parseOpsWithValidation(xmlText, strict = true) {
+        const boxes = {};
+        const errors = [];
+        const lines = xmlText.split('\n');
+        
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            const lineNum = i + 1;
             
-            while ((attrMatch = attrPattern.exec(attrsStr)) !== null) {
-                attrs[attrMatch[1]] = attrMatch[2];
+            // Skip allowed lines
+            if (this.isSkippableLine(line)) {
+                continue;
             }
-            attrPattern.lastIndex = 0; // Reset regex
             
-            const opId = attrs.id || '';
-            const boxIndex = parseInt(attrs.boxIndex || '0');
-            const superSource = parseInt(attrs.superSource || '0');
-            
-            if (!(boxIndex in boxes)) {
-                boxes[boxIndex] = new BoxState(boxIndex, superSource);
+            // Validate the line
+            const validation = this.validateOpLine(line);
+            if (!validation.valid) {
+                const errorMsg = `Line ${lineNum}: ${validation.error}`;
+                console.error(`[XMLParser] Parse Error - ${errorMsg}`);
+                
+                if (strict) {
+                    throw new Error(errorMsg);
+                } else {
+                    errors.push(errorMsg);
+                    continue;
+                }
             }
             
-            const box = boxes[boxIndex];
+            // Parse valid Op line
+            this.parseOpLine(line, boxes);
+        }
+        
+        return { boxes, errors };
+    }
+    
+    /**
+     * Parse a single Op line and add to boxes object
+     * @param {string} line - Op line to parse
+     * @param {Object} boxes - Boxes object to update
+     */
+    static parseOpLine(line, boxes) {
+        const attrPattern = /(\w+)="([^"]*)"/g;
+        const attrs = {};
+        let attrMatch;
+        
+        while ((attrMatch = attrPattern.exec(line)) !== null) {
+            attrs[attrMatch[1]] = attrMatch[2];
+        }
+        
+        const opId = attrs.id;
+        const boxIndex = parseInt(attrs.boxIndex || '0');
+        const superSource = parseInt(attrs.superSource || '0');
+        
+        if (!(boxIndex in boxes)) {
+            boxes[boxIndex] = new BoxState(boxIndex, superSource);
+        }
+        
+        const box = boxes[boxIndex];
+        
+        switch (opId) {
+            case 'SuperSourceV2BoxEnable':
+                box.enable = (attrs.enable || 'False').toLowerCase() === 'true';
+                break;
+            case 'SuperSourceV2BoxSize':
+                box.size = parseFloat(attrs.size || '1.0');
+                break;
+            case 'SuperSourceV2BoxXPosition':
+                box.xPosition = parseFloat(attrs.xPosition || '0.0');
+                break;
+            case 'SuperSourceV2BoxYPosition':
+                box.yPosition = parseFloat(attrs.yPosition || '0.0');
+                break;
+            case 'SuperSourceV2BoxMaskEnable':
+            case 'SuperSourceV2BoxCropEnable':
+                box.maskEnable = (attrs.enable || 'False').toLowerCase() === 'true';
+                break;
+            case 'SuperSourceV2BoxMaskLeft':
+            case 'SuperSourceV2BoxCropLeft':
+                box.maskLeft = parseFloat(attrs.left || '0.0');
+                break;
+            case 'SuperSourceV2BoxMaskTop':
+            case 'SuperSourceV2BoxCropTop':
+                box.maskTop = parseFloat(attrs.top || '0.0');
+                break;
+            case 'SuperSourceV2BoxMaskRight':
+            case 'SuperSourceV2BoxCropRight':
+                box.maskRight = parseFloat(attrs.right || '0.0');
+                break;
+            case 'SuperSourceV2BoxMaskBottom':
+            case 'SuperSourceV2BoxCropBottom':
+                box.maskBottom = parseFloat(attrs.bottom || '0.0');
+                break;
+        }
+    }
+    
+    /**
+     * Parse XML with strict validation (throws on error)
+     * This is the main method used for loading XML
+     * @param {string} xmlText - XML text to parse
+     * @returns {Object} - Parsed boxes
+     * @throws {Error} - On any parsing error
+     */
+    static parseOps(xmlText) {
+        const { boxes } = this.parseOpsWithValidation(xmlText, true);
+        return boxes;
+    }
+    
+    /**
+     * Standardize XML text - remove all non-Op lines and invalid lines
+     * Returns only valid <Op> lines for SuperSource Box operations
+     * @param {string} xmlText - XML text to standardize
+     * @returns {{ standardized: string, removedCount: number, errors: Array<string> }}
+     */
+    static standardizeXml(xmlText) {
+        const validLines = [];
+        const errors = [];
+        let removedCount = 0;
+        const lines = xmlText.split('\n');
+        
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            const trimmed = line.trim();
             
-            switch (opId) {
-                case 'SuperSourceV2BoxEnable':
-                    box.enable = (attrs.enable || 'False').toLowerCase() === 'true';
-                    break;
-                case 'SuperSourceV2BoxSize':
-                    box.size = parseFloat(attrs.size || '1.0');
-                    break;
-                case 'SuperSourceV2BoxXPosition':
-                    box.xPosition = parseFloat(attrs.xPosition || '0.0');
-                    break;
-                case 'SuperSourceV2BoxYPosition':
-                    box.yPosition = parseFloat(attrs.yPosition || '0.0');
-                    break;
-                case 'SuperSourceV2BoxMaskEnable':
-                case 'SuperSourceV2BoxCropEnable':
-                    box.maskEnable = (attrs.enable || 'False').toLowerCase() === 'true';
-                    break;
-                case 'SuperSourceV2BoxMaskLeft':
-                case 'SuperSourceV2BoxCropLeft':
-                    box.maskLeft = parseFloat(attrs.left || '0.0');
-                    break;
-                case 'SuperSourceV2BoxMaskTop':
-                case 'SuperSourceV2BoxCropTop':
-                    box.maskTop = parseFloat(attrs.top || '0.0');
-                    break;
-                case 'SuperSourceV2BoxMaskRight':
-                case 'SuperSourceV2BoxCropRight':
-                    box.maskRight = parseFloat(attrs.right || '0.0');
-                    break;
-                case 'SuperSourceV2BoxMaskBottom':
-                case 'SuperSourceV2BoxCropBottom':
-                    box.maskBottom = parseFloat(attrs.bottom || '0.0');
-                    break;
+            // Skip empty lines, comments, Macro tags, etc.
+            if (this.isSkippableLine(line)) {
+                if (trimmed) removedCount++; // Count non-empty skipped lines
+                continue;
+            }
+            
+            // Validate Op line
+            const validation = this.validateOpLine(line);
+            if (validation.valid) {
+                validLines.push(trimmed);
+            } else {
+                console.warn(`[XMLParser] Standardize - Removed line ${i + 1}: ${validation.error}`);
+                errors.push(`Line ${i + 1}: ${validation.error}`);
+                removedCount++;
             }
         }
         
-        return boxes;
+        return {
+            standardized: validLines.join('\n'),
+            removedCount,
+            errors
+        };
     }
 }
 
@@ -947,6 +1122,316 @@ class TransitionGenerator {
         }
         
         return lines.join('\n');
+    }
+    
+    /**
+     * Reverse parse generated output XML to extract original parameters
+     * This method does NOT rely on any comments in the XML
+     * 
+     * @param {string} xmlText - Generated transition XML output
+     * @returns {{ initialStates: Object, finalStates: Object, durationFrames: number, easingType: string }}
+     * @throws {Error} - If XML cannot be parsed
+     */
+    static reverseParseOutput(xmlText) {
+        const lines = xmlText.split('\n');
+        
+        // Data collection structures
+        const frameData = {};  // { frameIndex: { boxIndex: { size, xPosition, yPosition, maskLeft, ... } } }
+        const enableStates = {};  // { boxIndex: { initial: bool, final: bool } }
+        const maskEnableStates = {}; // { boxIndex: { initial: bool, final: bool } }
+        
+        // Track MacroSleep to determine frame boundaries
+        let currentFrame = 0;
+        let totalMacroSleeps = 0;
+        
+        // Parse each line
+        for (const line of lines) {
+            const trimmed = line.trim();
+            
+            // Skip empty lines and comments
+            if (!trimmed || trimmed.startsWith('<!--') || trimmed.startsWith('--')) {
+                continue;
+            }
+            
+            // Count MacroSleep to track frame progression
+            if (trimmed.includes('MacroSleep')) {
+                totalMacroSleeps++;
+                currentFrame++;
+                continue;
+            }
+            
+            // Parse Op tags
+            if (!trimmed.startsWith('<Op ')) continue;
+            
+            // Extract attributes
+            const attrs = {};
+            const attrPattern = /(\w+)="([^"]*)"/g;
+            let match;
+            while ((match = attrPattern.exec(trimmed)) !== null) {
+                attrs[match[1]] = match[2];
+            }
+            
+            const opId = attrs.id;
+            const boxIndex = parseInt(attrs.boxIndex || '0');
+            const superSource = parseInt(attrs.superSource || '0');
+            
+            // Initialize frame data structure
+            if (!frameData[currentFrame]) {
+                frameData[currentFrame] = {};
+            }
+            if (!frameData[currentFrame][boxIndex]) {
+                frameData[currentFrame][boxIndex] = { superSource };
+            }
+            
+            const boxData = frameData[currentFrame][boxIndex];
+            
+            // Parse different Op types
+            switch (opId) {
+                case 'SuperSourceV2BoxEnable':
+                    const isEnabled = (attrs.enable || 'False').toLowerCase() === 'true';
+                    if (!enableStates[boxIndex]) {
+                        enableStates[boxIndex] = { initial: isEnabled, final: isEnabled };
+                    } else {
+                        enableStates[boxIndex].final = isEnabled;
+                    }
+                    break;
+                case 'SuperSourceV2BoxSize':
+                    boxData.size = parseFloat(attrs.size);
+                    break;
+                case 'SuperSourceV2BoxXPosition':
+                    boxData.xPosition = parseFloat(attrs.xPosition);
+                    break;
+                case 'SuperSourceV2BoxYPosition':
+                    boxData.yPosition = parseFloat(attrs.yPosition);
+                    break;
+                case 'SuperSourceV2BoxMaskEnable':
+                case 'SuperSourceV2BoxCropEnable':
+                    const maskEnabled = (attrs.enable || 'False').toLowerCase() === 'true';
+                    if (!maskEnableStates[boxIndex]) {
+                        maskEnableStates[boxIndex] = { initial: maskEnabled, final: maskEnabled };
+                    } else {
+                        maskEnableStates[boxIndex].final = maskEnabled;
+                    }
+                    break;
+                case 'SuperSourceV2BoxMaskLeft':
+                case 'SuperSourceV2BoxCropLeft':
+                    boxData.maskLeft = parseFloat(attrs.left);
+                    break;
+                case 'SuperSourceV2BoxMaskTop':
+                case 'SuperSourceV2BoxCropTop':
+                    boxData.maskTop = parseFloat(attrs.top);
+                    break;
+                case 'SuperSourceV2BoxMaskRight':
+                case 'SuperSourceV2BoxCropRight':
+                    boxData.maskRight = parseFloat(attrs.right);
+                    break;
+                case 'SuperSourceV2BoxMaskBottom':
+                case 'SuperSourceV2BoxCropBottom':
+                    boxData.maskBottom = parseFloat(attrs.bottom);
+                    break;
+            }
+        }
+        
+        // Duration is MacroSleep count - 1 (initial sleep + animation frames)
+        // The first MacroSleep is after initial positions, so durationFrames = totalMacroSleeps - 1
+        const durationFrames = Math.max(1, totalMacroSleeps - 1);
+        
+        // Build initial states (frame 0)
+        const initialStates = {};
+        for (let i = 0; i < 4; i++) {
+            initialStates[i] = new BoxState(i);
+            
+            // Get data from frame 0
+            const frame0Data = frameData[0] && frameData[0][i];
+            if (frame0Data) {
+                initialStates[i].superSource = frame0Data.superSource || 0;
+                if (frame0Data.size !== undefined) initialStates[i].size = frame0Data.size;
+                if (frame0Data.xPosition !== undefined) initialStates[i].xPosition = frame0Data.xPosition;
+                if (frame0Data.yPosition !== undefined) initialStates[i].yPosition = frame0Data.yPosition;
+                if (frame0Data.maskLeft !== undefined) initialStates[i].maskLeft = frame0Data.maskLeft;
+                if (frame0Data.maskTop !== undefined) initialStates[i].maskTop = frame0Data.maskTop;
+                if (frame0Data.maskRight !== undefined) initialStates[i].maskRight = frame0Data.maskRight;
+                if (frame0Data.maskBottom !== undefined) initialStates[i].maskBottom = frame0Data.maskBottom;
+            }
+            
+            // Set enable states
+            if (enableStates[i]) {
+                initialStates[i].enable = enableStates[i].initial;
+            }
+            
+            // Set mask enable
+            if (maskEnableStates[i]) {
+                initialStates[i].maskEnable = maskEnableStates[i].initial;
+            }
+        }
+        
+        // Build final states (last frame data + final enable states)
+        const finalStates = {};
+        const lastFrame = currentFrame; // After last MacroSleep
+        
+        for (let i = 0; i < 4; i++) {
+            finalStates[i] = new BoxState(i);
+            
+            // Try to get data from the last frame with animation data
+            // Search backwards from lastFrame to find the most recent data for this box
+            let foundData = null;
+            for (let f = lastFrame; f >= 0; f--) {
+                if (frameData[f] && frameData[f][i] && frameData[f][i].size !== undefined) {
+                    foundData = frameData[f][i];
+                    break;
+                }
+            }
+            
+            if (foundData) {
+                finalStates[i].superSource = foundData.superSource || 0;
+                if (foundData.size !== undefined) finalStates[i].size = foundData.size;
+                if (foundData.xPosition !== undefined) finalStates[i].xPosition = foundData.xPosition;
+                if (foundData.yPosition !== undefined) finalStates[i].yPosition = foundData.yPosition;
+                if (foundData.maskLeft !== undefined) finalStates[i].maskLeft = foundData.maskLeft;
+                if (foundData.maskTop !== undefined) finalStates[i].maskTop = foundData.maskTop;
+                if (foundData.maskRight !== undefined) finalStates[i].maskRight = foundData.maskRight;
+                if (foundData.maskBottom !== undefined) finalStates[i].maskBottom = foundData.maskBottom;
+            } else {
+                // Copy from initial if no animation data
+                finalStates[i].copyFrom(initialStates[i]);
+            }
+            
+            // Set final enable states
+            if (enableStates[i]) {
+                finalStates[i].enable = enableStates[i].final;
+            }
+            
+            // Set final mask enable
+            if (maskEnableStates[i]) {
+                finalStates[i].maskEnable = maskEnableStates[i].final;
+            }
+        }
+        
+        // Detect easing type by analyzing interpolation curve
+        const easingType = this._detectEasingType(frameData, initialStates, finalStates, durationFrames);
+        
+        return {
+            initialStates,
+            finalStates,
+            durationFrames,
+            easingType
+        };
+    }
+    
+    /**
+     * Detect easing type from frame data by curve fitting
+     * @private
+     */
+    static _detectEasingType(frameData, initialStates, finalStates, durationFrames) {
+        // Collect sample points from animation frames
+        const samplePoints = [];
+        
+        // Find a box that has animation (size or position changes)
+        let animatingBoxIndex = -1;
+        let animatingProperty = null;
+        let startValue = 0;
+        let endValue = 0;
+        
+        for (let i = 0; i < 4; i++) {
+            const initial = initialStates[i];
+            const final = finalStates[i];
+            
+            // Check if this box has significant animation
+            const sizeDiff = Math.abs(final.size - initial.size);
+            const xDiff = Math.abs(final.xPosition - initial.xPosition);
+            const yDiff = Math.abs(final.yPosition - initial.yPosition);
+            
+            if (sizeDiff > 0.01) {
+                animatingBoxIndex = i;
+                animatingProperty = 'size';
+                startValue = initial.size;
+                endValue = final.size;
+                break;
+            } else if (xDiff > 0.1) {
+                animatingBoxIndex = i;
+                animatingProperty = 'xPosition';
+                startValue = initial.xPosition;
+                endValue = final.xPosition;
+                break;
+            } else if (yDiff > 0.1) {
+                animatingBoxIndex = i;
+                animatingProperty = 'yPosition';
+                startValue = initial.yPosition;
+                endValue = final.yPosition;
+                break;
+            }
+        }
+        
+        // If no animation found, default to linear
+        if (animatingBoxIndex < 0 || animatingProperty === null) {
+            return 'linear';
+        }
+        
+        // Collect normalized t values from actual interpolated data
+        const range = endValue - startValue;
+        if (Math.abs(range) < 0.0001) {
+            return 'linear';
+        }
+        
+        for (let frame = 1; frame <= durationFrames; frame++) {
+            const fd = frameData[frame];
+            if (!fd || !fd[animatingBoxIndex]) continue;
+            
+            const value = fd[animatingBoxIndex][animatingProperty];
+            if (value === undefined) continue;
+            
+            // Calculate what the eased t would be
+            // value = start + (end - start) * easedT
+            // easedT = (value - start) / (end - start)
+            const easedT = (value - startValue) / range;
+            const inputT = frame / durationFrames;
+            
+            samplePoints.push({ inputT, easedT });
+        }
+        
+        if (samplePoints.length < 3) {
+            return 'linear';
+        }
+        
+        // Test against known easing functions and find best match
+        const easingNames = Object.keys(EasingFunctions);
+        let bestMatch = 'linear';
+        let bestError = Infinity;
+        
+        for (const name of easingNames) {
+            const easingFunc = EasingFunctions[name];
+            let totalError = 0;
+            
+            for (const point of samplePoints) {
+                const expected = easingFunc(point.inputT);
+                const actual = point.easedT;
+                totalError += Math.pow(expected - actual, 2);
+            }
+            
+            const avgError = totalError / samplePoints.length;
+            
+            if (avgError < bestError) {
+                bestError = avgError;
+                bestMatch = name;
+            }
+        }
+        
+        // If error is too high, default to linear
+        if (bestError > 0.01) {
+            // Try to determine if it's approximately one of the common easings
+            // by checking the overall shape
+            const midPoint = samplePoints.find(p => Math.abs(p.inputT - 0.5) < 0.1);
+            if (midPoint) {
+                const midEased = midPoint.easedT;
+                if (midEased < 0.3) {
+                    return 'ease_in';
+                } else if (midEased > 0.7) {
+                    return 'ease_out';
+                }
+            }
+        }
+        
+        return bestMatch;
     }
 }
 
@@ -3396,14 +3881,23 @@ class SuperSourceTransitionApp {
         const initialXml = this.initialXmlEl.value.trim();
         const finalXml = this.finalXmlEl.value.trim();
         
-        if (!initialXml || !finalXml) return;
-        
+        if (!initialXml && !finalXml) {
+            this.clearOutputPreview();
+            return;
+        }
+
         // Check if initial and final XML are the same
-        if (initialXml === finalXml) return;
-        
+        if (initialXml === finalXml) {
+            this.clearOutputPreview();            
+            return;
+        }
+
         const frames = parseInt(this.framesInputEl.value);
-        if (isNaN(frames) || frames <= 0) return;
-        
+        if (isNaN(frames) || frames <= 0) {
+            this.clearOutputPreview();            
+            return;
+        }
+
         try {
             // Validate both XMLs
             const initialStates = XMLParser.parseOps(initialXml);
@@ -3413,16 +3907,31 @@ class SuperSourceTransitionApp {
             const hasInitialBox = Object.values(initialStates).some(b => b.enable);
             const hasFinalBox = Object.values(finalStates).some(b => b.enable);
             
-            if (!hasInitialBox && !hasFinalBox) return;
-            
+            if (!hasInitialBox && !hasFinalBox) {
+                this.clearOutputPreview();
+                return;
+            }   
             // Auto generate (silent mode)
             this.generate(true);
         } catch (e) {
-            // Invalid XML, don't auto-generate
+            // Invalid XML - clear output preview but don't show error toast
+            console.warn('[tryAutoGenerate] Parse error, clearing output:', e.message);
+            this.clearOutputPreview();
         }
     }
     
     // ============== XML Operations ==============
+    
+    /**
+     * Clear output preview and hide controls
+     * Called when parsing errors occur
+     */
+    clearOutputPreview() {
+        this.outputXmlEl.querySelector('code').textContent = '';
+        this.outputSection.classList.add('hidden');
+        this.hidePreviewControls();
+        this.generator = null;
+    }
     
     previewInitial(silent = false) {
         const xml = this.initialXmlEl.value.trim();
@@ -3442,6 +3951,15 @@ class SuperSourceTransitionApp {
             const enabledCount = Object.values(states).filter(b => b.enable).length;
             if (!silent) toast.success(i18n.t('toast.previewSuccess'), i18n.tf('toast.initialPreview', enabledCount));
         } catch (e) {
+            // Parse error: clear output preview and canvas, but keep box control panel values
+            console.error('[previewInitial] Parse error:', e.message);
+            this.clearOutputPreview();
+            
+            // Clear only the preview canvas for initial state (don't affect box control panel)
+            if (this.previewCanvas) {
+                this.previewCanvas.redraw();
+            }
+            
             if (!silent) toast.error(i18n.t('toast.parseError'), i18n.tf('toast.parseInitialError', e.message));
         }
     }
@@ -3464,6 +3982,15 @@ class SuperSourceTransitionApp {
             const enabledCount = Object.values(states).filter(b => b.enable).length;
             if (!silent) toast.success(i18n.t('toast.previewSuccess'), i18n.tf('toast.finalPreview', enabledCount));
         } catch (e) {
+            // Parse error: clear output preview and canvas, but keep box control panel values
+            console.error('[previewFinal] Parse error:', e.message);
+            this.clearOutputPreview();
+            
+            // Clear only the preview canvas for final state (don't affect box control panel)
+            if (this.previewCanvas) {
+                this.previewCanvas.redraw();
+            }
+            
             if (!silent) toast.error(i18n.t('toast.parseError'), i18n.tf('toast.parseFinalError', e.message));
         }
     }
@@ -3487,10 +4014,24 @@ class SuperSourceTransitionApp {
     formatXml(type) {
         const textarea = type === 'initial' ? this.initialXmlEl : this.finalXmlEl;
         const xml = textarea.value.trim();
+        const i18n = window.i18nManager;
+        
+        if (!xml) {
+            toast.info(i18n.t('toast.info'), i18n.t('toast.emptyXml'));
+            return;
+        }
+        
+        // Step 1: Standardize XML - remove all non-Op lines, invalid lines, Macro tags, comments, etc.
+        const { standardized, removedCount, errors } = XMLParser.standardizeXml(xml);
+        
+        if (!standardized) {
+            toast.error(i18n.t('toast.error'), i18n.t('toast.noValidOps'));
+            return;
+        }
         
         try {
-            // Parse the XML first to validate and normalize
-            const states = XMLParser.parseOps(xml);
+            // Step 2: Parse the standardized XML to validate and load into states
+            const states = XMLParser.parseOps(standardized);
             
             // Load parsed states to ensure AppState is synced
             const mode = type === 'initial' ? 'initial' : 'final';
@@ -3503,7 +4044,7 @@ class SuperSourceTransitionApp {
                 }
             }
             
-            // Generate formatted XML using AppState.generateXML()
+            // Step 3: Generate formatted XML using AppState.generateXML()
             textarea.value = AppState.generateXML(mode);
             
             // Update preview and box control panel
@@ -3513,10 +4054,14 @@ class SuperSourceTransitionApp {
                 this.previewFinal(true);
             }
             
-            const i18n = window.i18nManager;
-            toast.success(i18n.t('toast.formatted'), i18n.t('toast.formattedSuccess'));
+            // Show success with info about removed lines
+            if (removedCount > 0) {
+                toast.success(i18n.t('toast.formatted'), i18n.tf('toast.formattedWithRemoved', removedCount));
+            } else {
+                toast.success(i18n.t('toast.formatted'), i18n.t('toast.formattedSuccess'));
+            }
         } catch (e) {
-            const i18n = window.i18nManager;
+            console.error('[formatXml] Parse error after standardization:', e.message);
             toast.error(i18n.t('toast.error'), i18n.t('toast.formatErrorMsg'));
         }
     }
@@ -3549,12 +4094,14 @@ class SuperSourceTransitionApp {
         
         if (!initialXml || !finalXml) {
             if (!silent) toast.warning(i18n.t('toast.missingInput'), i18n.t('toast.missingXml'));
+            this.clearOutputPreview();
             return false;
         }
         
         const frames = parseInt(this.framesInputEl.value);
         if (isNaN(frames) || frames <= 0) {
             if (!silent) toast.warning(i18n.t('toast.invalidParameter'), i18n.t('toast.invalidFrames'));
+            this.clearOutputPreview();
             return false;
         }
         
@@ -3568,6 +4115,7 @@ class SuperSourceTransitionApp {
             const output = this.generator.generate();
             
             this.outputXmlEl.querySelector('code').textContent = output;
+            console.log(TransitionGenerator.reverseParseOutput(output));
             
             // Show output section
             this.outputSection.classList.remove('hidden');
@@ -3594,6 +4142,10 @@ class SuperSourceTransitionApp {
             if (!silent) toast.success(i18n.t('toast.generated'), i18n.tf('toast.generatedFrames', frames));
             return true;
         } catch (e) {
+            // Parse error - clear output preview and show error
+            console.error('[generate] Parse error:', e.message);
+            this.clearOutputPreview();
+            
             if (!silent) toast.error(i18n.t('toast.generateError'), e.message);
             return false;
         }
@@ -3908,7 +4460,7 @@ class SuperSourceTransitionApp {
         
         this.previewInitial(true);
         this.previewFinal(true);
-        this.tryAutoGenerate();
+        App.update();
         
         const i18n = window.i18nManager;
         toast.success(i18n.t('toast.loaded'), i18n.t('toast.loadedSuccess'));
