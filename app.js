@@ -406,7 +406,7 @@ const App = {
         for (let i = 0; i < 4; i++) {
             states[i].reset();
         }
-        this.update('reset');
+        this.update('reset', { skipXml: true } );
     },
     
     // Reset single box
@@ -1028,6 +1028,14 @@ class BoxPreviewCanvas {
         this.dragAxis = null;
         this.wasDragging = false;
         
+        // Highlighted box index for touch interaction (shows handles without locking)
+        // This is different from AppState.activeBoxIndex which locks the box
+        this.highlightedBoxIndex = null;
+        
+        // Touch interaction state
+        this.lastTapTime = 0;
+        this.lastTapBoxIndex = null;
+        
         // Transforming animation states (only used during playback)
         this.transformingStates = null;
         
@@ -1295,7 +1303,7 @@ class BoxPreviewCanvas {
         }
     }
     
-    // Handle click for deactivating box when clicking outside
+    // Handle click for highlighting box or deactivating when clicking outside
     onClick(e) {
         if (AppState.viewMode === 'transforming') return;
         
@@ -1308,13 +1316,25 @@ class BoxPreviewCanvas {
         const pos = this.getMousePos(e);
         const hitInfo = this.hitTest(pos.x, pos.y);
         
-        // Only handle clicks outside any box to deactivate
-        if (!hitInfo && AppState.activeBoxIndex !== null) {
-            console.log(AppState.activeBoxIndex)
-            AppState.activeBoxIndex = null;
-            const i18n = window.i18nManager;
-            toast.info(i18n.t('toast.boxUnlocked'), i18n.t('toast.boxUnlockedMsg'));
+        if (hitInfo) {
+            // Single click on a box - highlight it (show handles) without locking
+            // This is especially useful for touch/mobile interaction
+            this.highlightedBoxIndex = hitInfo.boxIndex;
             this.redraw();
+        } else {
+            // Click outside any box
+            // Clear highlighted box
+            if (this.highlightedBoxIndex !== null) {
+                this.highlightedBoxIndex = null;
+                this.redraw();
+            }
+            // Also clear active box if any
+            if (AppState.activeBoxIndex !== null) {
+                AppState.activeBoxIndex = null;
+                const i18n = window.i18nManager;
+                toast.info(i18n.t('toast.boxUnlocked'), i18n.t('toast.boxUnlockedMsg'));
+                this.redraw();
+            }
         }
     }
     
@@ -1383,11 +1403,27 @@ class BoxPreviewCanvas {
     onTouchStart(e) {
         if (e.touches.length === 1) {
             const touch = e.touches[0];
-            const mouseEvent = new MouseEvent('mousedown', {
-                clientX: touch.clientX,
-                clientY: touch.clientY
-            });
-            this.onMouseDown(mouseEvent);
+            const pos = {
+                x: touch.clientX - this.canvas.getBoundingClientRect().left,
+                y: touch.clientY - this.canvas.getBoundingClientRect().top
+            };
+            const hitInfo = this.hitTest(pos.x, pos.y);
+            
+            // Store touch start info for tap detection
+            this.touchStartTime = Date.now();
+            this.touchStartPos = pos;
+            this.touchStartHit = hitInfo;
+            this.touchMoved = false;
+            
+            // Start drag if on a box
+            if (hitInfo) {
+                const mouseEvent = new MouseEvent('mousedown', {
+                    clientX: touch.clientX,
+                    clientY: touch.clientY
+                });
+                this.onMouseDown(mouseEvent);
+            }
+            
             e.preventDefault();
         }
     }
@@ -1395,6 +1431,19 @@ class BoxPreviewCanvas {
     onTouchMove(e) {
         if (e.touches.length === 1) {
             const touch = e.touches[0];
+            const pos = {
+                x: touch.clientX - this.canvas.getBoundingClientRect().left,
+                y: touch.clientY - this.canvas.getBoundingClientRect().top
+            };
+            
+            // Check if user has moved significantly (not a tap)
+            if (this.touchStartPos) {
+                const dist = Math.hypot(pos.x - this.touchStartPos.x, pos.y - this.touchStartPos.y);
+                if (dist > 10) {
+                    this.touchMoved = true;
+                }
+            }
+            
             const mouseEvent = new MouseEvent('mousemove', {
                 clientX: touch.clientX,
                 clientY: touch.clientY
@@ -1405,7 +1454,73 @@ class BoxPreviewCanvas {
     }
     
     onTouchEnd(e) {
+        const touchDuration = Date.now() - (this.touchStartTime || 0);
+        const hitInfo = this.touchStartHit;
+        
+        // Handle tap (short touch without movement)
+        if (!this.touchMoved && touchDuration < 300) {
+            const now = Date.now();
+            const doubleTapThreshold = 300; // ms
+            
+            if (hitInfo) {
+                // Tapped on a box
+                if (this.lastTapBoxIndex === hitInfo.boxIndex && 
+                    now - this.lastTapTime < doubleTapThreshold) {
+                    // Double tap on same box - toggle active (lock)
+                    this.handleDoubleTapOnBox(hitInfo.boxIndex);
+                    this.lastTapTime = 0;
+                    this.lastTapBoxIndex = null;
+                } else {
+                    // Single tap - highlight (show handles)
+                    this.highlightedBoxIndex = hitInfo.boxIndex;
+                    this.redraw();
+                    this.lastTapTime = now;
+                    this.lastTapBoxIndex = hitInfo.boxIndex;
+                }
+            } else {
+                // Tapped outside any box - clear highlight and active
+                if (this.highlightedBoxIndex !== null) {
+                    this.highlightedBoxIndex = null;
+                    this.redraw();
+                }
+                if (AppState.activeBoxIndex !== null) {
+                    AppState.activeBoxIndex = null;
+                    const i18n = window.i18nManager;
+                    toast.info(i18n.t('toast.boxUnlocked'), i18n.t('toast.boxUnlockedMsg'));
+                    this.redraw();
+                }
+                this.lastTapTime = 0;
+                this.lastTapBoxIndex = null;
+            }
+        }
+        
+        // Clean up drag state
         this.onMouseUp(e);
+        
+        // Reset touch tracking
+        this.touchStartTime = null;
+        this.touchStartPos = null;
+        this.touchStartHit = null;
+        this.touchMoved = false;
+    }
+    
+    // Handle double tap on a box (toggle active/lock state)
+    handleDoubleTapOnBox(boxIndex) {
+        if (AppState.viewMode === 'transforming') return;
+        
+        const i18n = window.i18nManager;
+        if (AppState.activeBoxIndex === boxIndex) {
+            // Double-tap on already active box - deactivate
+            AppState.activeBoxIndex = null;
+            this.highlightedBoxIndex = null;
+            toast.info(i18n.t('toast.boxUnlocked'), i18n.t('toast.boxUnlockedMsg'));
+        } else {
+            // Activate this box
+            AppState.activeBoxIndex = boxIndex;
+            this.highlightedBoxIndex = boxIndex;
+            toast.info(i18n.t('toast.boxLocked'), i18n.tf('toast.boxLockedMsg', boxIndex));
+        }
+        this.redraw();
     }
     
     // Handle drag operation
@@ -1826,6 +1941,7 @@ class BoxPreviewCanvas {
         const isHovered = this.hoverInfo && this.hoverInfo.boxIndex === box.boxIndex;
         const isDragging = this.isDragging && this.dragBoxIndex === box.boxIndex;
         const isActive = AppState.activeBoxIndex === box.boxIndex;
+        const isHighlighted = this.highlightedBoxIndex === box.boxIndex; // For touch/click highlight
         const isInteractive = AppState.viewMode !== 'transforming';
         const isDisabled = !box.enable; // Currently disabled in this state
         
@@ -1851,6 +1967,9 @@ class BoxPreviewCanvas {
         const rectX = tl.x, rectY = tl.y;
         const rectW = br.x - tl.x, rectH = br.y - tl.y;
         
+        // Determine if this box should show handles (highlighted, hovered, dragging, or active)
+        const showHandles = isHovered || isDragging || isActive || isHighlighted;
+        
         // Draw active box highlight (subtle filled background only, no thick border)
         if (isActive && isInteractive) {
             ctx.fillStyle = color + '25'; // Very subtle highlight
@@ -1861,9 +1980,9 @@ class BoxPreviewCanvas {
         // Disabled boxes now use same opacity as enabled (70 for hover/active, 50 normal)
         let fillOpacity, strokeOpacity;
         if (isDisabled) {
-            fillOpacity = (isHovered || isDragging || isActive) ? '70' : '50';
-            strokeOpacity = (isHovered || isDragging || isActive) ? 'CC' : '99';
-        } else if (isHovered || isDragging || isActive) {
+            fillOpacity = showHandles ? '70' : '50';
+            strokeOpacity = showHandles ? 'CC' : '99';
+        } else if (showHandles) {
             fillOpacity = '70';
             strokeOpacity = 'FF';
         } else {
@@ -1872,8 +1991,8 @@ class BoxPreviewCanvas {
         }
         
         // Draw box with shadow
-        ctx.shadowColor = (isHovered || isDragging || isActive) ? 'rgba(0, 0, 0, 0.25)' : 'rgba(0, 0, 0, 0.15)';
-        ctx.shadowBlur = (isHovered || isDragging || isActive) ? 12 : 8;
+        ctx.shadowColor = showHandles ? 'rgba(0, 0, 0, 0.25)' : 'rgba(0, 0, 0, 0.15)';
+        ctx.shadowBlur = showHandles ? 12 : 8;
         ctx.shadowOffsetX = 2;
         ctx.shadowOffsetY = 2;
         ctx.fillStyle = color + fillOpacity;
@@ -1882,7 +2001,7 @@ class BoxPreviewCanvas {
         
         // Draw border - dashed for disabled boxes, solid for enabled
         ctx.strokeStyle = color + strokeOpacity;
-        ctx.lineWidth = (isHovered || isDragging || isActive) ? 3 : 2;
+        ctx.lineWidth = showHandles ? 3 : 2;
         if (isDisabled) {
             ctx.setLineDash([6, 4]); // Dashed line for disabled
         } else {
@@ -1891,9 +2010,9 @@ class BoxPreviewCanvas {
         ctx.strokeRect(rectX, rectY, rectW, rectH);
         ctx.setLineDash([]); // Reset dash
         
-        // Draw interaction handles when interactive and (hovered/dragging/active)
-        // Now also works for disabled boxes
-        if (isInteractive && (isHovered || isDragging || isActive)) {
+        // Draw interaction handles when interactive and (hovered/dragging/active/highlighted)
+        // Now also works for disabled boxes and highlighted boxes (touch selection)
+        if (isInteractive && showHandles) {
             this.drawInteractionHandles(box, rectX, rectY, rectW, rectH, color, isActive);
         }
         
@@ -2053,6 +2172,40 @@ class BoxPreviewCanvas {
                 }
             });
         }
+    }
+    
+    /**
+     * Highlight a box (show handles) without locking it
+     * Called from external sources like legend or box control panel
+     * @param {number} boxIndex - The box index to highlight (0-3), or null to clear
+     */
+    highlightBox(boxIndex) {
+        if (AppState.viewMode === 'transforming') return;
+        this.highlightedBoxIndex = boxIndex;
+        this.redraw();
+    }
+    
+    /**
+     * Toggle active (locked) state for a box
+     * Called from external sources like legend or box control panel on double-click
+     * @param {number} boxIndex - The box index to toggle (0-3)
+     */
+    toggleActiveBox(boxIndex) {
+        if (AppState.viewMode === 'transforming') return;
+        
+        const i18n = window.i18nManager;
+        if (AppState.activeBoxIndex === boxIndex) {
+            // Already active - deactivate
+            AppState.activeBoxIndex = null;
+            this.highlightedBoxIndex = null;
+            toast.info(i18n.t('toast.boxUnlocked'), i18n.t('toast.boxUnlockedMsg'));
+        } else {
+            // Activate this box
+            AppState.activeBoxIndex = boxIndex;
+            this.highlightedBoxIndex = boxIndex;
+            toast.info(i18n.t('toast.boxLocked'), i18n.tf('toast.boxLockedMsg', boxIndex));
+        }
+        this.redraw();
     }
     
     setViewMode(mode) {
@@ -3027,6 +3180,82 @@ class SuperSourceTransitionApp {
         // Precision toggle buttons
         this.allPrecisionBtns.forEach(btn => {
             btn.addEventListener('click', (e) => this.setDragPrecision(e.currentTarget.dataset.precision));
+        });
+        
+        // Legend items - click to highlight, double-click to lock
+        this.bindLegendEvents();
+        
+        // Box panel header titles - click to highlight, double-click to lock
+        this.bindBoxPanelHeaderEvents();
+    }
+    
+    // Bind click/double-click events on legend items
+    bindLegendEvents() {
+        const legendItems = document.querySelectorAll('.legend-item[data-box]');
+        legendItems.forEach(item => {
+            let clickTimer = null;
+            
+            item.addEventListener('click', (e) => {
+                const boxIndex = parseInt(item.dataset.box);
+                
+                // Use timer to differentiate single vs double click
+                if (clickTimer) {
+                    // Double click detected
+                    clearTimeout(clickTimer);
+                    clickTimer = null;
+                    this.previewCanvas.toggleActiveBox(boxIndex);
+                } else {
+                    clickTimer = setTimeout(() => {
+                        // Single click - highlight box
+                        this.previewCanvas.highlightBox(boxIndex);
+                        clickTimer = null;
+                    }, 250);
+                }
+            });
+        });
+    }
+    
+    // Bind click/double-click events on box panel headers
+    bindBoxPanelHeaderEvents() {
+        const boxPanelHeaders = document.querySelectorAll('.box-panel-header');
+        boxPanelHeaders.forEach(header => {
+            const panel = header.closest('.box-control-panel');
+            if (!panel) return;
+            
+            const boxIndex = parseInt(panel.dataset.box);
+            const colorDot = header.querySelector('.box-color-dot');
+            const title = header.querySelector('.box-title');
+            
+            let clickTimer = null;
+            
+            const handleClick = (e) => {
+                // Don't trigger on buttons or switches
+                if (e.target.closest('button') || e.target.closest('.enable-switch')) return;
+                
+                // Use timer to differentiate single vs double click
+                if (clickTimer) {
+                    // Double click detected
+                    clearTimeout(clickTimer);
+                    clickTimer = null;
+                    this.previewCanvas.toggleActiveBox(boxIndex);
+                } else {
+                    clickTimer = setTimeout(() => {
+                        // Single click - highlight box
+                        this.previewCanvas.highlightBox(boxIndex);
+                        clickTimer = null;
+                    }, 250);
+                }
+            };
+            
+            // Make color dot and title clickable
+            if (colorDot) {
+                colorDot.style.cursor = 'pointer';
+                colorDot.addEventListener('click', handleClick);
+            }
+            if (title) {
+                title.style.cursor = 'pointer';
+                title.addEventListener('click', handleClick);
+            }
         });
     }
     

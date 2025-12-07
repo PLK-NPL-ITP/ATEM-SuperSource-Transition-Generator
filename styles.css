@@ -359,6 +359,8 @@ body {
     cursor: pointer;
     border-radius: var(--radius-sm);
     transition: all var(--transition-fast);
+    min-width: 68px;
+    text-align: center;
 }
 
 .toggle-btn:hover {
@@ -410,15 +412,17 @@ body {
 }
 
 .precision-btn {
-    padding: 6px 12px;
+    padding: 8px 16px;
     border: none;
     background: transparent;
     color: var(--text-secondary);
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 500;
     cursor: pointer;
     border-radius: var(--radius-sm);
     transition: all var(--transition-fast);
+    min-width: 68px;
+    text-align: center;
 }
 
 .precision-btn:hover {
@@ -484,6 +488,20 @@ body {
     gap: 8px;
     font-size: 13px;
     color: var(--text-secondary);
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: var(--radius-sm);
+    transition: all var(--transition-fast);
+    user-select: none;
+}
+
+.legend-item:hover {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+
+.legend-item:active {
+    transform: scale(0.98);
 }
 
 .legend-color {
@@ -658,12 +676,12 @@ body {
     height: 200px;
     padding: 16px;
     border: none;
-    font-family: 'JetBrains Mono', 'Fira Code', 'Monaco', monospace;
+    font-family: "Consolas", "Courier New", monospace;
     font-size: 12px;
     line-height: 1.6;
     color: var(--text-primary);
     background: var(--bg-primary);
-    resize: vertical;
+    resize: none;
 }
 
 .io-panel textarea:focus {
@@ -766,6 +784,22 @@ body {
     background: var(--bg-primary);
     transition: all var(--transition-fast);
     min-width: 150px;
+}
+
+.param-group select {
+    /* Fix arrow position with padding */
+    padding-right: 36px;
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236B7280' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 14px center;
+    cursor: pointer;
+}
+
+[data-theme="dark"] .param-group select {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23a1a1aa' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
 }
 
 .param-group input:focus,
@@ -952,7 +986,7 @@ body {
 }
 
 .output-container code {
-    font-family: 'JetBrains Mono', 'Fira Code', 'Monaco', monospace;
+    font-family: "Consolas", "Courier New", monospace;
     font-size: 12px;
     line-height: 1.7;
     color: var(--canvas-text);
@@ -1305,6 +1339,11 @@ body {
     .section-header-actions {
         flex-wrap: wrap;
     }
+
+    .toast {
+        min-width: auto;
+        max-width: calc(100vw - 48px);
+    }
 }
 
 /* ============== Animations ============== */
@@ -1357,8 +1396,10 @@ body {
 }
 
 .section-header-actions .btn-secondary {
-    padding: 6px 12px;
+    padding: 8px 16px;
     font-size: 13px;
+    min-width: 68px;
+    text-align: center;
 }
 
 .section-header-actions .btn-secondary svg {
@@ -1459,6 +1500,13 @@ body {
     height: 12px;
     border-radius: 50%;
     flex-shrink: 0;
+    cursor: pointer;
+    transition: transform var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.box-color-dot:hover {
+    transform: scale(1.2);
+    box-shadow: 0 0 8px currentColor;
 }
 
 .box-color-dot.box0 { background: var(--box0-color); }
@@ -1471,6 +1519,13 @@ body {
     font-weight: 600;
     color: var(--text-primary);
     flex: 1;
+    cursor: pointer;
+    transition: color var(--transition-fast);
+    user-select: none;
+}
+
+.box-title:hover {
+    color: var(--primary-red);
 }
 
 /* Enable Switch */
@@ -1615,14 +1670,14 @@ body {
 }
 
 .param-row .box-input {
-    width: 58px;
-    min-width: 58px;
+    width: 75px;
+    min-width: 65px;
     flex-shrink: 0;
     padding: 4px 6px;
     border: 1px solid var(--border-color);
     border-radius: var(--radius-sm);
     font-size: 14px;
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-family: "Consolas", "Courier New", monospace;
     color: var(--text-primary);
     background: var(--bg-primary);
     text-align: right;
